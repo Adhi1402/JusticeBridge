@@ -234,7 +234,7 @@ ALLOW_PLANNER_FALLBACK = os.environ.get(
 # reasons, never fewer. Safe to leave off; useful once a real on-device model
 # is loaded and you want higher recall.
 #
-#   JB_LLM_ASSISTED_GROUNDING=1   -> grounding_agent also asks the LLM
+JB_LLM_ASSISTED_GROUNDING=1   #-> grounding_agent also asks the LLM
 #                                    "does section X actually support claim Y?"
 #   JB_LLM_ASSISTED_ELIGIBILITY=1 -> escalation_agent also asks the LLM to spot
 #                                    Section-12 categories the keyword list missed
