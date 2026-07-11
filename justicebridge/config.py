@@ -52,7 +52,7 @@ INDIACODE_JSON = os.environ.get("JB_INDIACODE") or _first_existing(
 )
 CORPUS_FILE = os.environ.get("JB_CORPUS", str(DATA_DIR / "corpus.json"))
 CHROMA_DIR = os.environ.get("JB_CHROMA", str(PACKAGE_DIR / "chroma_db"))
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDING_MODEL = os.environ.get("JB_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
 # The catalogue of legal-topic KB stores lives in kb_registry.py. Each store
 # is its own Chroma collection. build_corpus.py reads acts_by_store() to know
@@ -168,25 +168,65 @@ SARVAM_STT_MODEL = os.environ.get("JB_SARVAM_STT_MODEL", "saaras:v3")
 SARVAM_TTS_MODEL = os.environ.get("JB_SARVAM_TTS_MODEL", "bulbul:v3")
 SARVAM_TTS_SPEAKER = os.environ.get("JB_SARVAM_TTS_SPEAKER", "priya")
 WHISPER_MODEL = os.environ.get("JB_WHISPER_MODEL", "small")
+WHISPER_DEVICE = os.environ.get("JB_WHISPER_DEVICE", "cpu")          # cpu | cuda
+WHISPER_COMPUTE_TYPE = os.environ.get("JB_WHISPER_COMPUTE_TYPE", "int8")
+TESSERACT_CMD = os.environ.get("JB_TESSERACT_CMD", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
 
 # ---------------------------------------------------------------------------
 # Retrieval
 # ---------------------------------------------------------------------------
-RETRIEVAL_K = 8
+RETRIEVAL_K = int(os.environ.get("JB_RETRIEVAL_K", "8"))
 # Below this fused-retrieval signal, the Reasoning agent flags
 # insufficient_context and the graph loops back to Retrieval (bounded).
-RETRIEVAL_MIN_SIM = 0.02  # RRF scores are small; this is a floor, not a cosine
-MAX_RETRIEVAL_RETRIES = 2
-MAX_GROUNDING_RETRIES = 2
+RETRIEVAL_MIN_SIM = float(os.environ.get("JB_RETRIEVAL_MIN_SIM", "0.02"))  # floor, not a cosine
+MAX_RETRIEVAL_RETRIES = int(os.environ.get("JB_MAX_RETRIEVAL_RETRIES", "2"))
+MAX_GROUNDING_RETRIES = int(os.environ.get("JB_MAX_GROUNDING_RETRIES", "2"))
 
 # ---------------------------------------------------------------------------
 # Risk / severity thresholds
 # ---------------------------------------------------------------------------
 # A deadline at/under this many days => treat the clock as "running now".
-DEADLINE_RED_DAYS = 30
-DEADLINE_AMBER_DAYS = 120
+DEADLINE_RED_DAYS = int(os.environ.get("JB_DEADLINE_RED_DAYS", "30"))
+DEADLINE_AMBER_DAYS = int(os.environ.get("JB_DEADLINE_AMBER_DAYS", "120"))
 # Composite confidence below this forces escalation to a human regardless.
-LOW_CONFIDENCE_ESCALATE = 0.55
+LOW_CONFIDENCE_ESCALATE = float(os.environ.get("JB_LOW_CONFIDENCE_ESCALATE", "0.55"))
+
+# ---------------------------------------------------------------------------
+# Fallback control — when an on-device/cloud backend is unavailable, agents
+# normally degrade silently (LLM -> extractive/keyword, Sarvam -> offline).
+# Set to "0" to DISABLE silent fallback for an agent: it will surface an
+# honest "unavailable" state instead of quietly using a lesser backend. The
+# pipeline still never crashes — it just escalates to a human sooner instead
+# of pretending a degraded answer is the real thing. Useful for: forcing a
+# demo to prove the real LLM/NPU path is live, or a UI team wanting to show
+# "reasoning temporarily unavailable" rather than a silently-swapped answer.
+#
+#   JB_ALLOW_LLM_FALLBACK      -> master switch for both agents below
+#   JB_ALLOW_REASONING_FALLBACK -> Reasoning agent only (default = master)
+#   JB_ALLOW_PLANNER_FALLBACK   -> Planner agent only   (default = master)
+# ---------------------------------------------------------------------------
+ALLOW_LLM_FALLBACK = os.environ.get("JB_ALLOW_LLM_FALLBACK", "1") == "1"
+ALLOW_REASONING_FALLBACK = os.environ.get(
+    "JB_ALLOW_REASONING_FALLBACK", "1" if ALLOW_LLM_FALLBACK else "0"
+) == "1"
+ALLOW_PLANNER_FALLBACK = os.environ.get(
+    "JB_ALLOW_PLANNER_FALLBACK", "1" if ALLOW_LLM_FALLBACK else "0"
+) == "1"
+
+# ---------------------------------------------------------------------------
+# Optional LLM-assisted upgrades — OFF by default. Both are strictly ADDITIVE
+# to the deterministic keyword/regex checks (never replace or override them),
+# so turning these on can only find MORE grounded claims / eligibility
+# reasons, never fewer. Safe to leave off; useful once a real on-device model
+# is loaded and you want higher recall.
+#
+#   JB_LLM_ASSISTED_GROUNDING=1   -> grounding_agent also asks the LLM
+#                                    "does section X actually support claim Y?"
+#   JB_LLM_ASSISTED_ELIGIBILITY=1 -> escalation_agent also asks the LLM to spot
+#                                    Section-12 categories the keyword list missed
+# ---------------------------------------------------------------------------
+LLM_ASSISTED_GROUNDING = os.environ.get("JB_LLM_ASSISTED_GROUNDING", "0") == "1"
+LLM_ASSISTED_ELIGIBILITY = os.environ.get("JB_LLM_ASSISTED_ELIGIBILITY", "0") == "1"
 
 # ---------------------------------------------------------------------------
 # Default kiosk location (which DLSA to surface when the user's district is

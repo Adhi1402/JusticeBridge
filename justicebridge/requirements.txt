@@ -2,8 +2,13 @@
 # JusticeBridge — Python dependencies
 # ----------------------------------------------------------------------------
 #   pip install -r justicebridge/requirements.txt
-# The Snapdragon-only on-device LLM backends (geniex / onnxruntime-genai) are
-# intentionally NOT installed by default — see the LLM section at the bottom.
+#
+# NOTE: `geniex` below (Snapdragon NPU backend) will FAIL TO BUILD on a
+# non-Snapdragon x64 dev machine (verified: "Unsupported platform ('win32',
+# 'amd64')") — its native SDK only ships prebuilt binaries for win32/arm64 and
+# linux/aarch64. On an x64 dev box, comment out the `geniex` line below, then
+# `pip install -r justicebridge/requirements.txt`; the pipeline runs fine on
+# JB_LLM_BACKEND=extractive without it.
 # ============================================================================
 
 # ---- Core orchestration + retrieval ----
@@ -34,8 +39,8 @@ fastapi                   # UNO Q mock listener (optional)
 uvicorn                   # UNO Q mock listener (optional)
 
 # ---- Translation (optional — falls back to English if absent) ----
-# IndicTransToolkit
-# transformers            # IndicTrans2 en->indic
+IndicTransToolkit
+transformers            # IndicTrans2 en->indic
 
 # ============================================================================
 # On-device LLM backend for the Reasoning + Planner agents (install ONE on the
@@ -44,15 +49,15 @@ uvicorn                   # UNO Q mock listener (optional)
 # statute text (JB_LLM_BACKEND=extractive), which is what runs on a non-
 # Snapdragon dev machine.
 #
-#   geniex                # Qualcomm GenieX (QAIRT/Genie). NPU on the Snapdragon
-#                         # AI PC. Native SDK only builds on win32/arm64 or
-#                         # linux/aarch64 — will NOT pip install on x64.
-#                         # JB_LLM_BACKEND=geniex
-#
-#   onnxruntime-genai     # ORT + QNN execution provider on the Hexagon NPU,
-#                         # loading a Qualcomm AI Hub genai bundle.
-#                         # JB_LLM_BACKEND=onnx_qnn  JB_ONNX_QNN_MODEL_DIR=...
-#
-#   (no package)          # any OpenAI-compatible /v1 server (e.g. llama.cpp).
-#                         # JB_LLM_BACKEND=openai  JB_OPENAI_BASE_URL=...
+geniex                 # Qualcomm GenieX (QAIRT/Genie), NPU on the Snapdragon AI
+                        # PC. Native SDK only builds on win32/arm64 or
+                        # linux/aarch64 — comment out on x64 (see NOTE above).
+                        # JB_LLM_BACKEND=geniex
+
+onnxruntime-genai      # ORT + QNN execution provider on the Hexagon NPU,
+                        # loading a Qualcomm AI Hub genai bundle.
+                        # JB_LLM_BACKEND=onnx_qnn  JB_ONNX_QNN_MODEL_DIR=...
+
+# (no extra package needed for JB_LLM_BACKEND=openai — any OpenAI-compatible
+#  /v1 server, e.g. llama.cpp. Set JB_OPENAI_BASE_URL.)
 # ============================================================================

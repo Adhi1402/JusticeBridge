@@ -74,16 +74,26 @@ def planner_agent(state: CaseState) -> dict:
         return empty
 
     chosen, backend = None, "keyword"
+    llm_unavailable = False
 
     # Try LLM routing first (if a model is live).
     try:
         chosen = _llm_route(text)
         if chosen is not None:
             backend = "llm"
-    except llm.LLMUnavailable:
+    except llm.LLMUnavailable as e:
         chosen = None
+        llm_unavailable = True
 
-    # Keyword fallback if the LLM was unavailable OR returned no match.
+    if llm_unavailable and not config.ALLOW_PLANNER_FALLBACK:
+        # Fallback disabled: don't silently switch to keyword routing when the
+        # model is simply down. Surface it honestly and route to the safe
+        # unsupported/human-handoff branch, same as "nothing matched".
+        return {**empty, "planner_backend": "unavailable",
+                "error": ["Planner LLM unavailable and fallback disabled"]}
+
+    # Keyword scoring — either the normal secondary signal (LLM is live but
+    # found no match) or the allowed fallback (LLM unavailable).
     if chosen is None:
         scores = _keyword_scores(text)
         best = max(scores, key=scores.get) if scores else None

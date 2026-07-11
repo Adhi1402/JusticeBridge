@@ -198,9 +198,72 @@ Merges `transcript` + `doc_text` into `combined_text` for the Planner.
 | `openai` | any OpenAI-compatible `/v1` endpoint (e.g. a llama.cpp server). Dev convenience. |
 | `extractive` | no model; grounded answer from retrieved statute text. Always available — what runs on a non-Snapdragon dev box. |
 
-Reasoning/Planner **silently degrade to keyword/extractive** if the LLM is
-unavailable, so the pipeline never hard-fails. ASR/OCR/TTS degrade the same way
-to on-device (Whisper/Tesseract/pyttsx3).
+By default Reasoning/Planner **silently degrade to keyword/extractive** if the
+LLM is unavailable, and ASR/OCR/TTS degrade the same way to on-device
+(Whisper/Tesseract/pyttsx3) — the pipeline never hard-fails. This silent
+degrade is itself controllable — see below.
+
+### Fallback control (`JB_ALLOW_*_FALLBACK`)
+
+Sometimes you want to know the real backend is actually live rather than get
+a good-looking but silently-downgraded answer (proving the demo is really
+using the NPU, or a UI wanting to show "reasoning temporarily unavailable").
+Set these to `0` to disable silent fallback for that agent — it still never
+crashes, it just surfaces an honest `"...backend": "unavailable"` and lets the
+normal low-confidence path escalate to a human sooner:
+
+| var | default | effect when `0` |
+|---|---|---|
+| `JB_ALLOW_LLM_FALLBACK` | `1` | master switch for both agents below |
+| `JB_ALLOW_REASONING_FALLBACK` | = master | Reasoning won't use the extractive answer; `draft_answer` stays empty, `reasoning_backend="unavailable"`, `grounded=False` → confidence capped low → auto-escalates |
+| `JB_ALLOW_PLANNER_FALLBACK` | = master | Planner won't use keyword routing when the LLM is down; routes straight to the safe unsupported/handoff branch instead |
+
+### Optional LLM-assisted upgrades (off by default, strictly additive)
+
+Two agents can optionally use a second LLM call to catch things the
+deterministic checks miss — both are designed so enabling them can only make
+the result **more** grounded / **more** eligibility hits found, never less
+(the keyword/regex check is always the floor, the LLM only tightens Grounding
+or loosens — i.e. finds more of — Eligibility):
+
+| var | default | agent | what it adds |
+|---|---|---|---|
+| `JB_LLM_ASSISTED_GROUNDING` | `0` | Grounding-Verify | a second "does this section actually entail this claim?" check beyond lexical overlap — catches a claim that shares vocabulary with a section but inverts its meaning |
+| `JB_LLM_ASSISTED_ELIGIBILITY` | `0` | Escalation/Aid | re-checks the Section-12 category list against the citizen's words for **implied** matches the keyword cues miss (e.g. "I've needed a wheelchair since the accident" → disability, without the word "disabled") |
+
+**Deliberately NOT LLM-based:** Risk/Deadline (urgency must stay a real legal
+clock from `deadlines.json`, never a model's "vibe") and the DLSA/eligibility
+*lookup itself* (must stay a pure data lookup — that's what makes "you qualify
+for free legal aid" a zero-hallucination-risk claim in the first place).
+
+---
+
+## Building a UI on top of this backend
+
+Two ways to integrate, both stable contracts a separate frontend team can
+build against without touching agent internals:
+
+**1. HTTP API — [`api.py`](api.py)** (recommended for a separate UI team):
+```bash
+pip install fastapi uvicorn
+uvicorn justicebridge.api:app --host 0.0.0.0 --port 8080
+```
+| endpoint | purpose |
+|---|---|
+| `GET /health` | which backends are configured/live — for a status bar |
+| `GET /kb-stores` | the legal-topic catalogue — for a "what can I ask about" menu |
+| `POST /ask` | `{text_input?, audio_base64?, image_base64?, lang, want_tts}` → JSON result (audio/image travel as base64; every other field is plain JSON) |
+
+The response is a deliberate **allowlist** (`api.py::_RESPONSE_FIELDS`), not a
+dump of internal state — so new internal fields never leak into the contract
+until reviewed and added there.
+
+**2. Direct Python — `graph.get_app().invoke(state_dict)`** for a team working
+in the same codebase (e.g. extending `app.py`). Input/output is the
+`CaseState` TypedDict in [`state.py`](state.py) — every field is plain
+str/int/float/bool/list/dict except `image` (PIL.Image) and `audio_bytes` /
+`audio_response` (raw bytes), which only matter for direct Python use, not the
+HTTP API (which base64-encodes them).
 
 ---
 
@@ -256,6 +319,9 @@ Severity match         : 100%
 ---
 
 ## Key environment variables
+See `justicebridge/.env.example` for a ready-to-copy template.
+
+**Backends**
 | var | default | purpose |
 |---|---|---|
 | `SARVAM_API_KEY` | — | Sarvam STT/OCR/TTS (from `.env` or env) |
@@ -263,5 +329,28 @@ Severity match         : 100%
 | `JB_VISION_BACKEND` | `sarvam` | `sarvam` \| `tesseract` |
 | `JB_TTS_BACKEND` | `sarvam` | `sarvam` \| `pyttsx3` \| `none` |
 | `JB_LLM_BACKEND` | `geniex` | `geniex` \| `onnx_qnn` \| `openai` \| `extractive` |
-| `JB_DISTRICT` | `Kanchipuram` | which DLSA to surface |
+| `JB_GENIEX_MODEL` | `ai-hub-models/Llama-v3.1-8B-Instruct` | AI Hub bundle id or a GGUF HF repo |
+| `JB_ONNX_QNN_MODEL_DIR` | — | path to an AI Hub `genai_config.json` bundle dir |
+| `JB_OPENAI_BASE_URL` | `http://localhost:8080/v1` | for `JB_LLM_BACKEND=openai` |
+| `JB_WHISPER_MODEL` | `small` | faster-whisper model size |
+| `JB_WHISPER_DEVICE` / `JB_WHISPER_COMPUTE_TYPE` | `cpu` / `int8` | faster-whisper runtime settings |
+| `JB_TESSERACT_CMD` | (Windows default path) | Tesseract-OCR binary location |
+| `JB_EMBEDDING_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | retrieval embedding model |
+
+**Fallback control & optional LLM upgrades** — see the *Backends at a glance*
+section above for the full explanation.
+| var | default |
+|---|---|
+| `JB_ALLOW_LLM_FALLBACK` / `JB_ALLOW_REASONING_FALLBACK` / `JB_ALLOW_PLANNER_FALLBACK` | `1` |
+| `JB_LLM_ASSISTED_GROUNDING` / `JB_LLM_ASSISTED_ELIGIBILITY` | `0` |
+
+**Retrieval, risk & misc**
+| var | default | purpose |
+|---|---|---|
+| `JB_RETRIEVAL_K` | `8` | sections retrieved per query |
+| `JB_RETRIEVAL_MIN_SIM` | `0.02` | below this, Reasoning retries Retrieval |
+| `JB_MAX_RETRIEVAL_RETRIES` / `JB_MAX_GROUNDING_RETRIES` | `2` / `2` | bounded-loop caps |
+| `JB_DEADLINE_RED_DAYS` / `JB_DEADLINE_AMBER_DAYS` | `30` / `120` | severity thresholds |
+| `JB_LOW_CONFIDENCE_ESCALATE` | `0.55` | confidence floor that forces escalation |
+| `JB_DISTRICT` / `JB_STATE` | `Kanchipuram` / `Tamil Nadu` | which DLSA to surface |
 | `JB_HF_OFFLINE` | `1` | keep embeddings/Whisper fully offline after first cache |

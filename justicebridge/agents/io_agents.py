@@ -50,7 +50,11 @@ def _get_whisper():
     global _whisper_model
     if _whisper_model is None:
         from faster_whisper import WhisperModel
-        _whisper_model = WhisperModel(config.WHISPER_MODEL, device="cpu", compute_type="int8")
+        _whisper_model = WhisperModel(
+            config.WHISPER_MODEL,
+            device=config.WHISPER_DEVICE,
+            compute_type=config.WHISPER_COMPUTE_TYPE,
+        )
     return _whisper_model
 
 
@@ -173,7 +177,7 @@ def tesseract_ocr_tool(image_path: str) -> dict:
     import pytesseract
     from PIL import Image
 
-    default_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    default_cmd = config.TESSERACT_CMD
     if os.path.exists(default_cmd):
         pytesseract.pytesseract.tesseract_cmd = default_cmd
 

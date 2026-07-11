@@ -5,6 +5,15 @@ Does two things, both pure lookups over structured data (zero hallucination):
   1. Section 12 eligibility: scans the citizen's own words for the automatic
      free-aid categories (woman, industrial workman, SC/ST, disability, ...).
      For a wage case, "industrial workman" alone usually already qualifies.
+     Optional LLM assist (config.LLM_ASSISTED_ELIGIBILITY, off by default):
+     the keyword cue list is deliberately literal ("disabled", "wheelchair")
+     and misses implied categories ("I've needed a wheelchair since the
+     accident"). When enabled, a second model call re-checks the same fixed
+     category list against the citizen's words and can ADD a category the
+     keywords missed — it can never remove a keyword-matched category, so
+     enabling this can only make eligibility detection MORE generous, never
+     less. Any failure (no model) is skipped silently — same guarantee as
+     every other optional LLM path in this codebase.
   2. DLSA handoff: attaches the nearest DLSA (name, phone, hours, what to
      bring) + the Tele-Law option, so "talk to a real free lawyer" is a
      first-class output.
@@ -18,6 +27,7 @@ import json
 
 from ..state import CaseState
 from .. import config
+from .. import llm
 
 with open(config.ELIGIBILITY_FILE, "r", encoding="utf-8") as _f:
     _ELIG = json.load(_f)
@@ -33,6 +43,30 @@ def _match_eligibility(text):
         if any(cue in text for cue in cat["cues"]):
             reasons.append(cat["explanation"])
     return reasons
+
+
+def _llm_extra_eligibility(text, already_found_ids):
+    """Ask the LLM to spot Section-12 categories the keyword scan missed.
+    Returns a list of explanation strings to ADD (never a removal). Any
+    failure returns [] — this check can only add, and silently no-ops."""
+    remaining = [c for c in _ELIG["categories"] if c["id"] not in already_found_ids]
+    if not remaining:
+        return []
+    catalogue = "\n".join(f"- {c['id']}: {c['label']}" for c in remaining)
+    system = (
+        "You determine free-legal-aid eligibility under India's Legal Services "
+        "Authorities Act, Section 12. Given what a citizen said, list ONLY the "
+        "category ids from the catalogue that clearly apply, even if the exact "
+        "keyword wasn't used (e.g. 'needed a wheelchair since the accident' "
+        "implies disability). One id per line. If none apply, answer 'none'."
+    )
+    user = f"Catalogue:\n{catalogue}\n\nCitizen said: \"{text}\"\n\nApplicable ids:"
+    try:
+        raw = llm.chat(system, user, temperature=0.0).strip().lower()
+    except llm.LLMUnavailable:
+        return []
+    found_ids = {c["id"] for c in remaining if c["id"] in raw}
+    return [c["explanation"] for c in remaining if c["id"] in found_ids]
 
 
 def _lookup_dlsa(district):
@@ -58,12 +92,6 @@ def escalation_agent(state: CaseState) -> dict:
 
     reasons = _match_eligibility(text)
 
-    # Vertical-based presumption: a wage dispute is, by its nature, brought by
-    # a worker — and industrial workmen qualify automatically under Section 12.
-    # If the citizen's words didn't already trigger a category, add the
-    # worker category so the headline "you likely qualify" output still fires
-    # (softer wording is handled downstream). Arch doc: "This covers most
-    # unpaid-wage cases."
     # Per-vertical Section-12 presumptions: the substantive law of some
     # verticals implies an automatic-eligibility category even when the
     # citizen's exact words didn't name it.
@@ -77,6 +105,10 @@ def escalation_agent(state: CaseState) -> dict:
                      if c["id"] == presumed), None)
         if expl and expl not in reasons:
             reasons.insert(0, expl)
+
+    if config.LLM_ASSISTED_ELIGIBILITY:
+        found_ids = {c["id"] for c in _ELIG["categories"] if c["explanation"] in reasons}
+        reasons.extend(r for r in _llm_extra_eligibility(text, found_ids) if r not in reasons)
 
     dlsa = _lookup_dlsa(config.DEFAULT_DISTRICT)
 

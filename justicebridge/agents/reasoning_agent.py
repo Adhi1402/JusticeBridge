@@ -124,20 +124,35 @@ def reasoning_agent(state: CaseState) -> dict:
         }
 
     backend = config.LLM_BACKEND
+    answer, claims, used = "", [], "none"
+    error = None
     try:
         answer, claims = _llm_draft(query, sections)
         used = backend
-    except llm.LLMUnavailable:
-        answer, claims = _extractive_draft(query, sections)
-        used = "extractive"
+    except llm.LLMUnavailable as e:
+        if config.ALLOW_REASONING_FALLBACK:
+            answer, claims = _extractive_draft(query, sections)
+            used = "extractive"
+        else:
+            # Fallback disabled: surface an honest "unavailable" state rather
+            # than silently swapping in the lesser backend. draft_answer stays
+            # empty -> grounding finds 0 claims -> grounded=False -> risk caps
+            # confidence low -> escalation fires automatically. The pipeline
+            # still completes and hands off to a human; it just doesn't
+            # pretend a missing model produced a real answer.
+            used = "unavailable"
+            error = f"Reasoning LLM unavailable and fallback disabled: {e}"
 
     citations = [{"act": s["act"], "section_no": s["section_no"], "title": s.get("title", "")}
                  for s in sections[:3]]
 
-    return {
+    out = {
         "insufficient_context": False,
         "draft_answer": answer,
         "draft_claims": claims,
         "citations": citations,
         "reasoning_backend": used,
     }
+    if error:
+        out["error"] = [error]
+    return out
