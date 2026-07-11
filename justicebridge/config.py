@@ -148,6 +148,17 @@ LLM_TIMEOUT = float(os.environ.get("JB_LLM_TIMEOUT", "60"))
 #                                      Indian-language documents).
 #                     = "tesseract" -> fully offline OCR fallback.
 #
+#   JB_TRANSLATION_BACKEND = "sarvam"     -> Sarvam text.translate (cloud;
+#                                      model sarvam-translate:v1 / mayura:v1).
+#                     = "indictrans2" -> ai4bharat/indictrans2-en-indic-dist
+#                                      -200M, a real ON-DEVICE MT model
+#                                      (~200M params, lazy-loaded, runs
+#                                      locally via transformers — no network
+#                                      needed once cached). This is what to
+#                                      use for a fully offline deployment.
+#                     = "none"        -> skip translation, English passthrough.
+#                   Falls back sarvam -> indictrans2 -> English on any failure.
+#
 # SARVAM_API_KEY is read from the environment (or a .env file — see
 # python-dotenv load below). NEVER hard-code the key here: this file is
 # committed to git. Put it in .env (git-ignored) or export it.
@@ -161,12 +172,15 @@ except Exception:
 ASR_BACKEND = os.environ.get("JB_ASR_BACKEND", "sarvam")
 TTS_BACKEND = os.environ.get("JB_TTS_BACKEND", "sarvam")
 VISION_BACKEND = os.environ.get("JB_VISION_BACKEND", "sarvam")
+TRANSLATION_BACKEND = os.environ.get("JB_TRANSLATION_BACKEND", "sarvam")
 
 SARVAM_API_KEY = os.environ.get("SARVAM_API_KEY", "")
 SARVAM_OCR_LANGUAGE = os.environ.get("JB_SARVAM_LANG", "en-IN")
 SARVAM_STT_MODEL = os.environ.get("JB_SARVAM_STT_MODEL", "saaras:v3")
 SARVAM_TTS_MODEL = os.environ.get("JB_SARVAM_TTS_MODEL", "bulbul:v3")
 SARVAM_TTS_SPEAKER = os.environ.get("JB_SARVAM_TTS_SPEAKER", "priya")
+SARVAM_TRANSLATE_MODEL = os.environ.get("JB_SARVAM_TRANSLATE_MODEL", "sarvam-translate:v1")
+INDICTRANS2_MODEL = os.environ.get("JB_INDICTRANS2_MODEL", "ai4bharat/indictrans2-en-indic-dist-200M")
 WHISPER_MODEL = os.environ.get("JB_WHISPER_MODEL", "small")
 WHISPER_DEVICE = os.environ.get("JB_WHISPER_DEVICE", "cpu")          # cpu | cuda
 WHISPER_COMPUTE_TYPE = os.environ.get("JB_WHISPER_COMPUTE_TYPE", "int8")

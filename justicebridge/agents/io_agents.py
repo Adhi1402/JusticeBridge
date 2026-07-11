@@ -190,13 +190,10 @@ def tesseract_ocr_tool(image_path: str) -> dict:
     return {"text": text, "confidence": confidence}
 
 
-def vision_agent(state: CaseState) -> dict:
-    """OCR an uploaded document image (supplementary — low confidence is fine).
-    Tries Sarvam first if configured, falls back to Tesseract on any failure."""
-    image = state.get("image")
-    if not image:
-        return {}
-
+def _ocr_one(image) -> tuple[str, float, list[str]]:
+    """Run the Sarvam->Tesseract OCR cascade on ONE PIL image. Returns
+    (text, confidence, errors) — never raises; a fully-failed document comes
+    back as ("", 0.0, [reasons]) so one bad upload can't sink the others."""
     tmp = None
     errors = []
     try:
@@ -206,22 +203,51 @@ def vision_agent(state: CaseState) -> dict:
 
         if config.VISION_BACKEND == "sarvam":
             try:
-                result = sarvam_ocr_tool.invoke({"image_path": tmp})
-                return {"doc_text": result["text"], "vision_confidence": result["confidence"]}
+                r = sarvam_ocr_tool.invoke({"image_path": tmp})
+                return r["text"], r["confidence"], errors
             except Exception as e:
                 errors.append(f"Sarvam OCR unavailable, falling back to Tesseract: {e}")
 
-        result = tesseract_ocr_tool.invoke({"image_path": tmp})
-        out = {"doc_text": result["text"], "vision_confidence": result["confidence"]}
-        if errors:
-            out["error"] = errors
-        return out
+        r = tesseract_ocr_tool.invoke({"image_path": tmp})
+        return r["text"], r["confidence"], errors
     except Exception as e:
-        errors.append(f"Vision error: {e}")
-        return {"error": errors}
+        errors.append(f"OCR failed for this document: {e}")
+        return "", 0.0, errors
     finally:
         if tmp and os.path.exists(tmp):
             os.unlink(tmp)
+
+
+def vision_agent(state: CaseState) -> dict:
+    """OCR one or more uploaded document images (supplementary — low
+    confidence is fine, and voice/document input are BOTH optional; this node
+    is a no-op if neither `images` nor `image` is set).
+
+    Accepts `state["images"]` (a list of PIL Images — the multi-document
+    path) OR the singular `state["image"]` (back-compat, single document).
+    Every document is OCR'd independently — one failed page doesn't block the
+    rest — and results are concatenated, labeled by document number, with the
+    average confidence across all pages that returned text."""
+    docs = state.get("images") or ([state["image"]] if state.get("image") else [])
+    if not docs:
+        return {}
+
+    texts, confidences, all_errors = [], [], []
+    for i, img in enumerate(docs, start=1):
+        text, conf, errors = _ocr_one(img)
+        label = f"--- Document {i} ---\n{text}" if len(docs) > 1 else text
+        if text:
+            texts.append(label)
+            confidences.append(conf)
+        all_errors.extend(f"Document {i}: {e}" for e in errors)
+
+    out = {
+        "doc_text": "\n\n".join(texts).strip(),
+        "vision_confidence": (sum(confidences) / len(confidences)) if confidences else 0.0,
+    }
+    if all_errors:
+        out["error"] = all_errors
+    return out
 
 
 # ---------------------------------------------------------------------------

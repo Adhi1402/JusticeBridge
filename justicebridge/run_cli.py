@@ -17,7 +17,11 @@ Manual voice/document testing (no browser needed):
     # take a photo of a document/notice and:
     python -m justicebridge.run_cli --image path\\to\\photo.jpg
 
-    # both together (voice + document in one query):
+    # multiple documents in one query (--image can repeat):
+    python -m justicebridge.run_cli --image page1.jpg --image page2.jpg
+
+    # both together (voice + document in one query — neither is mandatory,
+    # you can give text/voice/document in any combination, at least one):
     python -m justicebridge.run_cli --audio recording.wav --image notice.jpg
 """
 
@@ -39,7 +43,7 @@ from . import config, llm
 SEV_ICON = {"red": "[RED]", "amber": "[AMBER]", "green": "[GREEN]"}
 
 
-def run_once(query=None, lang="en", audio_path=None, image_path=None):
+def run_once(query=None, lang="en", audio_path=None, image_paths=None):
     app = get_app()
     init = {"lang": lang}
     if query:
@@ -47,9 +51,9 @@ def run_once(query=None, lang="en", audio_path=None, image_path=None):
     if audio_path:
         with open(audio_path, "rb") as f:
             init["audio_bytes"] = f.read()
-    if image_path:
+    if image_paths:
         from PIL import Image
-        init["image"] = Image.open(image_path)
+        init["images"] = [Image.open(p) for p in image_paths]
     state = app.invoke(init)
     return state
 
@@ -108,7 +112,8 @@ def main():
     ap.add_argument("query", nargs="*", help="the citizen's problem, in their words")
     ap.add_argument("--lang", default="en", help="output language: en | ta | hi | te")
     ap.add_argument("--audio", help="path to a .wav recording to transcribe (ASR test)")
-    ap.add_argument("--image", help="path to a document photo to OCR (Vision test)")
+    ap.add_argument("--image", action="append", default=[],
+                    help="path to a document photo to OCR (Vision test); repeat for multiple documents")
     args = ap.parse_args()
 
     print(f"LLM backend configured : {config.LLM_BACKEND}  "
@@ -118,7 +123,7 @@ def main():
 
     if args.query or args.audio or args.image:
         query = " ".join(args.query) if args.query else None
-        _print_report(run_once(query, args.lang, audio_path=args.audio, image_path=args.image))
+        _print_report(run_once(query, args.lang, audio_path=args.audio, image_paths=args.image))
         return
 
     print("\nInteractive mode — type a legal problem (blank to quit).")

@@ -31,7 +31,8 @@ class Citation(TypedDict, total=False):
 class CaseState(TypedDict, total=False):
     # ---- raw inputs (from phone / kiosk) ----
     audio_bytes: Optional[bytes]
-    image: Optional[Any]              # PIL Image
+    image: Optional[Any]              # PIL Image (single document — back-compat)
+    images: list                     # list[PIL.Image] — multi-document path
     text_input: str                  # typed/seed query (dev + fallback path)
     lang: str                        # ta | hi | te | en
     want_tts: bool                   # force TTS even without audio input

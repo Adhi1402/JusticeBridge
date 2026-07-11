@@ -91,14 +91,11 @@ go = st.button("Get help", type="primary", use_container_width=True)
 
 if go:
     audio_bytes = audio.getvalue() if audio else None
-    image = None
-    if docs:
-        # the graph's vision agent OCRs one PIL image; use the first upload
-        image = Image.open(io.BytesIO(docs[0].getvalue()))
-        if len(docs) > 1:
-            st.caption(f"Note: OCR runs on the first of {len(docs)} uploaded files in this demo.")
+    images = [Image.open(io.BytesIO(f.getvalue())) for f in (docs or [])]
 
-    if not (text_q.strip() or audio_bytes):
+    # Voice and document are BOTH optional — only text/voice/document as a
+    # whole needs at least one; you never need voice AND a document together.
+    if not (text_q.strip() or audio_bytes or images):
         st.warning("Please type, speak, or upload a document first.")
         st.stop()
 
@@ -107,8 +104,8 @@ if go:
         init["text_input"] = text_q.strip()
     if audio_bytes:
         init["audio_bytes"] = audio_bytes
-    if image is not None:
-        init["image"] = image
+    if images:
+        init["images"] = images  # all uploaded documents, OCR'd and merged
 
     with st.spinner("Thinking…"):
         state = get_app().invoke(init)

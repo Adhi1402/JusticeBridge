@@ -38,18 +38,21 @@ python -m justicebridge.build_index
 # 2. run a query end-to-end (text)
 python -m justicebridge.run_cli "I worked two months but the contractor hasn't paid my wages"
 
-# 2b. or drive it with a real recording / photo
+# 2b. or drive it with a real recording / photo — voice and document(s) are
+#     BOTH optional and never required together; --image can repeat for
+#     multiple documents
 python -m justicebridge.run_cli --audio recording.wav --image notice.jpg
+python -m justicebridge.run_cli --image page1.jpg --image page2.jpg   # multi-doc, no voice
 
 # 3. the gold-standard evaluation (the pitch number)
 python -m justicebridge.eval.run_eval
 
-# 4. the demo UI (mic + camera + severity light + spoken answer)
+# 4. the demo UI (mic + multi-file upload + severity light + spoken answer)
 streamlit run justicebridge/app.py
 ```
 
-Set your Sarvam key (for cloud STT/OCR/TTS) via a **git-ignored** `.env` at
-the repo root, or an env var — never hard-code it:
+Set your Sarvam key (for cloud STT/OCR/TTS/translation) via a **git-ignored**
+`.env` at the repo root, or an env var — never hard-code it:
 
 ```
 SARVAM_API_KEY=sk_...
@@ -87,103 +90,322 @@ grounding ─[needs_redraft]─► reasoning                 (loop 2, bounded)
 Every node returns only the keys it changes (partial state). ASR + Vision run
 in parallel from `START`. All external-service agents follow the same
 **graceful-degradation** contract: try the configured backend, fall back on
-any failure, never hard-crash.
+any failure, never hard-crash. For every agent below: **Uses an LLM?** and
+**Tools** are stated explicitly, and sample input/output is real output from
+an actual run (extractive reasoning backend, no live LLM), not invented.
 
 ### 1. ASR agent — `agents/io_agents.py` → `asr_agent`
 - **Role:** speech → text. Voice-first: workers speak, they don't type.
+- **Uses an LLM? No.** Speech-recognition models (Sarvam Saaras v3 / Whisper)
+  are a different model class — audio → text transcription, not generation.
+- **Tools:** `sarvam_stt_tool`, `whisper_stt_tool` (LangChain `@tool`).
 - **Backends** (`JB_ASR_BACKEND`): `sarvam` — Sarvam **Saaras v3** (cloud, 23
   Indian languages, auto language-detect); `whisper` — faster-whisper, fully
   on-device/offline. Tries Sarvam, falls back to Whisper on any failure.
-- **Tools:** `sarvam_stt_tool`, `whisper_stt_tool` (LangChain `@tool`).
-- **In:** `audio_bytes` (or `text_input` for typed/eval path).
-  **Out:** `transcript`, `asr_confidence`, `lang` (detected).
-- *Verified live:* Saaras needs `file=` as an **open binary object**, not a
-  path; Whisper transcribed synthesized speech at 99.8% confidence.
+- **In:** `{"audio_bytes": <wav bytes>}` (or `{"text_input": "..."}` for the
+  typed/eval path — this node is then a passthrough, `asr_confidence=1.0`).
+- **Out (real, verified):**
+  ```json
+  {"transcript": "I worked for two months but my contractor has not paid my wages.",
+   "asr_confidence": 0.9976528286933899, "lang": "en"}
+  ```
+- **Verified live:** Saaras needs `file=` as an **open binary object**, not a
+  path string. Whisper transcribed synthesized speech at 99.8% confidence.
+  Neither backend is required for input — see *Voice and document are both
+  optional* below.
 
 ### 2. Vision agent — `agents/io_agents.py` → `vision_agent`
-- **Role:** document photo → text (supplementary — a low OCR score is fine).
+- **Role:** document photo(s) → text (supplementary — a low OCR score is fine,
+  and no document at all is fine too).
+- **Uses an LLM? No.** OCR models (Sarvam Document Intelligence / Tesseract)
+  extract text; they don't reason about it.
+- **Tools:** `sarvam_ocr_tool`, `tesseract_ocr_tool`.
 - **Backends** (`JB_VISION_BACKEND`): `sarvam` — Sarvam **Document
   Intelligence** (cloud OCR, Indian-language documents); `tesseract` — offline.
-  Tries Sarvam, falls back to Tesseract.
-- **Tools:** `sarvam_ocr_tool`, `tesseract_ocr_tool`.
-- **In:** `image` (PIL). **Out:** `doc_text`, `vision_confidence`.
-- *Verified live:* Sarvam's `download_output()` returns a **ZIP** (not raw md)
-  — the tool unzips `document.md`; confirmed exact extraction on a test doc.
+  Tries Sarvam per document, falls back to Tesseract on any failure.
+- **Multiple documents:** accepts `state["images"]` (a **list** of PIL
+  Images) — each is OCR'd independently (one failed page never blocks the
+  rest) and results are concatenated, labeled `--- Document N ---`, with the
+  average confidence across pages that returned text. `state["image"]`
+  (singular) still works for a single document.
+- **In (2 documents):** `{"images": [<PIL.Image>, <PIL.Image>]}`
+- **Out (real, verified — 2 real documents OCR'd via Sarvam):**
+  ```json
+  {"doc_text": "--- Document 1 ---\nI worked two months but the contractor\n\nhas not paid my wages of Rs 18000\n\n--- Document 2 ---\nNotice: contractor name is Ramesh Traders, phone 9876543210",
+   "vision_confidence": 1.0}
+  ```
+- **Verified live:** Sarvam's `download_output()` returns a **ZIP** (not raw
+  markdown) — the tool unzips `document.md`; confirmed exact extraction on a
+  real image, and confirmed a blank/unreadable image OCRs to `""` (0.0
+  confidence) without crashing rather than inventing text.
 
 ### 3. Combine — `agents/io_agents.py` → `combine_node`
-Merges `transcript` + `doc_text` into `combined_text` for the Planner.
+- **Role:** merges `transcript` + `doc_text` into one `combined_text` string
+  for the Planner. Works with either, both, or (if truly nothing was said or
+  scanned) neither.
+- **Uses an LLM? No. Tools: none.** Pure string concatenation.
+- **In:** `{"transcript": "...", "doc_text": "..."}` (either may be empty)
+- **Out:** `{"combined_text": "transcript text doc text"}`
 
 ### 4. Planner / Router agent — `agents/planner_agent.py`
 - **Role:** the "which knowledge base?" decision. Picks the KB store(s) to
   search from the full [`kb_registry`](kb_registry.py) catalogue.
-- **Backends:** LLM classification when a model is live (robust to
-  paraphrase/code-mixing) → keyword scoring fallback (always available).
-- **In:** `combined_text`. **Out:** `vertical` (primary topic), `kb_stores`
-  (search set, incl. `free_aid`), `supported`, `output_template`,
-  `planner_backend`.
-- Unsupported-but-recognised topics (tenancy, fir) → `supported=False`, which
-  short-circuits to the human-handoff branch.
+- **Uses an LLM? Optional** (`JB_LLM_BACKEND` != `extractive`/unavailable) —
+  the model picks the best-matching topic id from the catalogue (robust to
+  paraphrase/code-mixing); calls `llm.chat()` directly (not tool-wrapped).
+  Falls back to keyword scoring (always available; word-boundary matched, see
+  `text_match.py`) if the LLM is unavailable or `JB_ALLOW_PLANNER_FALLBACK=0`.
+- **Tools: none** (the LLM call is direct, not a LangChain `@tool`).
+- **In:** `{"combined_text": "my employer has not paid my wages"}`
+- **Out (real, keyword backend):**
+  ```json
+  {"vertical": "wages", "supported": true, "kb_stores": ["wages", "free_aid"],
+   "output_template": "wage_dispute", "planner_backend": "keyword", "off_topic": false}
+  ```
+- **Out (off-topic — real, verified):** input `"what is the weather like
+  today, I want to know the cricket score"` →
+  ```json
+  {"vertical": null, "supported": false, "kb_stores": [], "off_topic": true}
+  ```
+- Unsupported-but-recognised topics (tenancy, fir) → `supported=False,
+  off_topic=False` (a real legal topic this tool just doesn't cover yet — a
+  DIFFERENT case from `off_topic=True`, see *Off-topic vs unsupported* below).
+- **Known limitation:** only ONE vertical is chosen per query (whichever
+  scores highest / the LLM's single pick) — a query mixing two legal issues
+  (e.g. "my husband, a factory worker, hasn't been paid and also beats me")
+  gets routed to only one (verified: routed to `wages`, the domestic-violence
+  content was silently not addressed). Not fixed in this build; see *Edge
+  cases* below.
 
 ### 5. Retrieval agent — `agents/retrieval_agent.py` + `retrieval.py`
 - **Role:** hybrid search over **only** the Planner-selected KB stores.
+- **Uses an LLM? No.** Uses an embedding model (`sentence-transformers/all-
+  MiniLM-L6-v2`, a similarity model, not generative) + BM25 keyword search.
+- **Tools: none** (`retrieve()` is a plain function, not `@tool`-wrapped).
 - **How:** per-store **BM25 + vector (Chroma)** fused with Reciprocal Rank
   Fusion, merged across stores; the substantive topic owns most citation slots
   and `free_aid` gets a small reserved quota. Widens `k` on a retry.
-- **In:** `combined_text`, `kb_stores`. **Out:** `retrieved_sections`,
-  `retrieval_sim` (a weak-retrieval signal that drives the retry loop).
+- **In:** `{"combined_text": "my employer has not paid my wages for two months",
+  "kb_stores": ["wages", "free_aid"]}`
+- **Out (real, verified, k=3):**
+  ```json
+  {"retrieval_sim": 0.288,
+   "retrieved_sections": [
+     {"act": "The Code on Wages, 2019", "section_no": "17",
+      "title": "Time limit for payment of wages", "store": "wages", "score": 0.0328,
+      "text": "Time limit for payment of wages. (iv) monthly basis, before the expiry..."},
+     {"act": "The Code on Wages, 2019", "section_no": "2", "title": "Definitions", ...}
+   ]}
+  ```
 
 ### 6. Reasoning agent — `agents/reasoning_agent.py`
 - **Role:** plain-language explanation citing **only** retrieved sections.
-- **Backends:** on-device LLM via `on_device_reasoning_tool` (GenieX /
-  onnx_qnn / openai — see LLM table) returning JSON `{answer, claims}`; or the
-  **extractive** fallback that builds the answer directly from retrieved
-  statute text (zero hallucination, always available).
-- **In:** `retrieved_sections`, `combined_text`. **Out:** `draft_answer`,
-  `draft_claims` (each tied to a `section_no`), `citations`,
-  `insufficient_context` (→ retry Retrieval before drafting from thin air),
-  `reasoning_backend`.
+- **Uses an LLM? Optional** (`JB_LLM_BACKEND` != `extractive`/unavailable).
+- **Tools:** `on_device_reasoning_tool` (`@tool`) — the ONLY tool-wrapped LLM
+  call in the whole pipeline. Given `{query, sections}`, asks the configured
+  backend (GenieX / onnx_qnn / openai) for JSON `{answer, claims}` where each
+  claim is tied to a `section_no`, so Grounding can verify it.
+- **Fallback (`_extractive_draft`, always available):** builds the answer
+  directly from the retrieved sections' actual text — every sentence is, by
+  construction, tied to a real section, so it's inherently grounded and
+  cannot hallucinate. This is what runs on a non-Snapdragon dev box.
+- **In:** `{"retrieved_sections": [...], "combined_text": "..."}`
+- **Out (real, extractive backend):**
+  ```json
+  {"reasoning_backend": "extractive", "insufficient_context": false,
+   "draft_answer": "Here is what the law says about your situation: Under The Code on Wages, 2019, Section 17 (Time limit for payment of wages): (iv) monthly basis, before the expiry of the seventh day of the succeeding month. ...",
+   "draft_claims": [{"claim": "Time limit for payment of wages — The Code on Wages, 2019 s.17", "section_no": "17"}],
+   "citations": [{"act": "The Code on Wages, 2019", "section_no": "17", "title": "Time limit for payment of wages"}]}
+  ```
+- If retrieval was too weak, sets `insufficient_context=true` instead of
+  drafting from thin air — the graph loops back to Retrieval (bounded, max 2).
+- `JB_ALLOW_REASONING_FALLBACK=0` disables the extractive fallback — see
+  *Fallback control* below.
 
 ### 7. Grounding-Verification agent — `agents/grounding_agent.py` *(trust layer)*
-- **Role:** every claim must map to a section that was actually retrieved — the
-  line between trustworthy and dangerous in a legal tool.
-- **Checks:** citation check (the cited `section_no` was retrieved) + lexical
-  support check for LLM drafts (claim terms overlap the cited section text).
-- **Out:** `grounded`; ungrounded claims force a bounded redraft
-  (`needs_redraft`) or are **stripped** (fail safe, never fail loud).
+- **Role:** every claim must map to a section that was actually retrieved —
+  the line between trustworthy and dangerous in a legal tool.
+- **Uses an LLM? Optional, off by default** (`JB_LLM_ASSISTED_GROUNDING=1`) —
+  a second "does this section actually entail this claim?" check via direct
+  `llm.chat()` call, strictly additive (can only reject a claim that already
+  passed the deterministic check, never approve one that failed it).
+- **Tools: none** (direct LLM call when enabled, not `@tool`-wrapped).
+- **Deterministic checks (always run):** citation check (cited `section_no`
+  was actually retrieved) + lexical overlap check (claim's key terms overlap
+  the cited section's text).
+- **In:** `{"draft_claims": [...], "retrieved_sections": [...], "reasoning_backend": "extractive"}`
+- **Out (real):**
+  ```json
+  {"grounded": true, "needs_redraft": false, "ungrounded_claims": [],
+   "draft_claims": [{"claim": "...", "section_no": "17"}]}
+  ```
+- Ungrounded claims force a bounded redraft (`needs_redraft=true`, max 2
+  retries) or are **stripped** once retries are exhausted (fail safe, never
+  fail loud with a hallucinated rule).
 
 ### 8. Risk / Deadline agent — `agents/risk_agent.py`
 - **Role:** turns signals into a **composite confidence** + a **grounded
-  urgency colour** (red/amber/green). Urgency is a real legal clock
-  (limitation / action window from `data/deadlines.json` keyed per vertical),
-  never a vibe.
-- **Out:** `composite_confidence`, `deadline_days`, `deadline_basis`,
-  `severity`.
+  urgency colour** (red/amber/green).
+- **Uses an LLM? No, deliberately.** Urgency is computed from real limitation
+  periods in `data/deadlines.json` (keyed per vertical via `kb_registry`) —
+  never a model's "vibe". This is an intentional design boundary, not an
+  oversight: severity reflects a real legal clock, not how urgent the text
+  *sounds* (see *Severity ≠ emotional urgency* in Edge Cases).
+- **Tools: none.** Pure arithmetic + JSON lookup.
+- **In:** `{"asr_confidence": 1.0, "retrieval_sim": 0.288, "vertical": "wages", "grounded": true, "retry_count": 0}`
+- **Out (real):**
+  ```json
+  {"composite_confidence": 0.667, "severity": "amber",
+   "deadline_days": 90, "deadline_basis": "Code on Wages, 2019, s.45 — an application for a claim relating to wages must generally be filed within three years... (VERIFY.)"}
+  ```
 
 ### 9. Escalation / Aid agent — `agents/escalation_agent.py` *(headline feature)*
 - **Role:** two pure lookups over structured data (zero hallucination):
-  **Section 12 eligibility** (scans the citizen's words for automatic free-aid
-  categories; per-vertical presumptions: wages→industrial workman,
-  family→woman) and the **DLSA handoff** (nearest office, phone, hours, what to
-  bring, Tele-Law). Always attaches a human handoff.
-- **Out:** `escalate`, `eligibility_reasons`, `dlsa_contact`, `severity`
-  (default green on the unsupported path).
+  **Section 12 eligibility** + the **DLSA handoff** (nearest office, phone,
+  hours, what to bring, Tele-Law). Always attaches a human handoff — except
+  for a genuinely off-topic query, see below.
+- **Uses an LLM? Optional, off by default** (`JB_LLM_ASSISTED_ELIGIBILITY=1`)
+  — re-checks the fixed Section-12 category list for **implied** matches the
+  keyword cues miss (e.g. "I've needed a wheelchair since the accident" →
+  disability). Strictly additive: can only ADD a category, never remove one
+  the keyword scan found. Direct `llm.chat()` call, not `@tool`-wrapped.
+- **Tools: none.**
+- **Off-topic short-circuit:** if the Planner set `off_topic=true`, this
+  agent returns immediately with `escalate=false, eligibility_reasons=[],
+  dlsa_contact=null` — a query with no legal content gets NO free-aid pitch
+  and NO DLSA push (fixed bug, see *Edge cases*).
+- **In:** `{"combined_text": "...", "vertical": "wages", "composite_confidence": 0.667, "severity": "amber"}`
+- **Out (real):**
+  ```json
+  {"escalate": true,
+   "eligibility_reasons": ["Industrial workmen — factory, construction and industrial workers — are entitled to free legal aid. This covers most unpaid-wage cases."],
+   "dlsa_contact": {"name": "DLSA Kanchipuram", "phone": "044-2723-XXXX",
+     "hours": "Mon-Fri, 10:00-17:00", "bring": "Aadhaar/voter ID, and any proof of work...",
+     "tele_law": "Ask at any Common Service Centre (CSC) / VLE for a Tele-Law session."}}
+  ```
+- **Out (off-topic, real):** `{"escalate": false, "eligibility_reasons": [], "dlsa_contact": null}`
 
 ### 10. Translation agent — `agents/translation_agent.py`
 - **Role:** render the assembled English answer into the citizen's language
-  (Tamil/Hindi/Telugu) via IndicTrans2. Lazy-loaded; falls back to English if
-  not installed. **Out:** `final_answer_local`.
+  (Tamil/Hindi/Telugu) — text → text.
+- **Uses an LLM? No.** Uses a dedicated machine-translation model, NOT a chat
+  LLM — see *Why Translation and TTS are separate agents* below for why this
+  distinction matters architecturally.
+- **Tools: none** (direct API/model calls).
+- **Backends** (`JB_TRANSLATION_BACKEND`): `sarvam` (default) — Sarvam
+  `text.translate` (cloud, model `sarvam-translate:v1`); `indictrans2` — **the
+  on-device model**: `ai4bharat/indictrans2-en-indic-dist-200M`, a ~200M-param
+  MT model (not an LLM), lazy-loaded via `transformers`, runs fully locally
+  once cached. `none` skips translation. Falls back sarvam → indictrans2 →
+  English passthrough on any failure.
+- **In:** `{"final_answer_en": "<~2000+ char full answer>", "lang": "ta"}`
+- **Out (real, verified, Sarvam backend, full-length real answer):**
+  ```json
+  {"final_answer_local": "சட்டம் உங்கள் சூழ்நிலையைப் பற்றி என்ன சொல்கிறது என்பது இங்கே: ஊதியக் குறியீடு, 2019 இன் கீழ், பிரிவு 17 ..."}
+  ```
+- **Verified live + fixed:** Sarvam's `text.translate` has a **hard 2000-
+  character limit** (`"String should have at most 2000 characters"`), and
+  JusticeBridge's real answers (rights explanation + aid pitch + deadline +
+  DLSA + disclaimer) routinely run 2000-2500 chars — over the limit almost
+  every time. Fixed by chunking on sentence boundaries and translating each
+  chunk, then rejoining — confirmed with a real 2080-char answer.
 
 ### 11. Output agent — `agents/output_agent.py`
-- **Role:** assemble the spoken script (grounded rights + free-aid headline +
-  real deadline + DLSA handoff + mandatory disclaimer) and the multi-device
+- **Role:** assemble the spoken script and the multi-device
   **`signal_packet`** (AI PC → UNO Q) + `phone_message`.
+- **Uses an LLM? No. Tools: none.** Pure string templating from upstream
+  agent outputs (draft_answer + eligibility_reasons + deadline + dlsa_contact).
+- **Three distinct answer shapes**, all real/verified:
+  1. **Supported** (a built vertical, e.g. wages): rights explanation + aid
+     pitch + deadline + DLSA + disclaimer (see Reasoning's sample above).
+  2. **Unsupported-but-recognised** (e.g. tenancy): *"Sorry — this kind of
+     legal problem is not yet supported... The best next step is to speak to
+     a real lawyer for free."* + aid pitch + DLSA + disclaimer.
+  3. **Off-topic** (no legal content at all): *"I couldn't find a legal
+     problem in what you said. This assistant helps with legal questions —
+     for example unpaid wages, a consumer complaint, or a family/domestic
+     issue. Please describe what happened and I'll try to help."* — **no**
+     aid pitch, **no** DLSA push.
+- **Out (`signal_packet`, real):**
+  ```json
+  {"severity": "amber", "category": "wages", "confidence": 0.667, "deadline_days": 90,
+   "dlsa": {"name": "DLSA Kanchipuram", "phone": "044-2723-XXXX", "bring": "..."},
+   "qualifies_for_aid": true}
+  ```
 
 ### 12. TTS agent — `agents/tts_agent.py`
-- **Role:** speak the answer back. **Voice in → voice out** (only runs for
-  audio input or `want_tts`).
-- **Backends** (`JB_TTS_BACKEND`): `sarvam` — **Bulbul v3** (speaks in the
-  detected language); `pyttsx3` — offline; `none`. **Out:** `audio_response`
-  (WAV bytes). *Verified live:* Bulbul returns a list of base64 WAV strings.
+- **Role:** speak the final answer back — text → audio. **Voice in → voice
+  out**: only runs if `audio_bytes` was given or `want_tts=true` (a typed
+  query doesn't trigger unwanted speech synthesis, e.g. in the eval harness).
+- **Uses an LLM? No.** Uses a speech-synthesis model, not a chat LLM.
+- **Tools: none.**
+- **Backends** (`JB_TTS_BACKEND`): `sarvam` — Bulbul v3 (cloud, speaks in the
+  detected language); `pyttsx3` — offline OS voices; `none`.
+- **In:** `{"final_answer_local": "...", "lang": "ta", "audio_bytes": <mic recording>}`
+- **Out (real, verified):** `{"audio_response": <267232 bytes of valid RIFF/WAV audio>}`
+- **Verified live:** Sarvam TTS's response is a **list** of base64-encoded WAV
+  strings (`response.audios[0]`), not a singular `.audio` field.
+
+---
+
+## Voice and document are BOTH optional
+
+Neither is mandatory, and they're never required together. A query can be
+**any combination** of `text_input` / `audio_bytes` / `images`, as long as at
+least one is present:
+
+| given | works? | verified |
+|---|---|---|
+| text only | ✅ | (the default CLI/eval path) |
+| voice only | ✅ | ASR sample above |
+| document(s) only, no voice/text | ✅ | tested: `run_cli --image doc.png` with no text/audio → routes and answers correctly from OCR text alone |
+| voice + document | ✅ | tested: audio + image together → both feed into `combined_text` |
+| **nothing at all** | ❌ | CLI/app/API all reject with a clear "please provide..." message rather than silently running on empty input |
+
+The Streamlit app previously had a bug where uploading a document with no
+text/voice was rejected by the validation check — fixed; `images` now counts
+toward "at least one input given."
+
+## Why Translation and TTS are separate agents, not merged
+
+They look adjacent in the pipeline (translate the answer, then speak it) but
+are fundamentally different operations:
+
+| | Translation | TTS |
+|---|---|---|
+| Transform | text → text | text → audio |
+| Model class | machine translation (encoder-decoder) | speech synthesis |
+| On-device model | IndicTrans2 (~200M params) | (OS voices via pyttsx3) |
+| Cloud model | Sarvam `text.translate` | Sarvam `text_to_speech.convert` |
+
+Keeping them separate agents means each can **independently** degrade — if
+translation fails, the English text still gets spoken by TTS (better than no
+audio at all); if TTS fails, the translated text is still shown/returned to
+the caller. Merging them into one "speak the answer" agent would mean one
+failure silently kills both.
+
+---
+
+## Edge cases & known limitations
+
+Every row below was actually run through the pipeline, not just reasoned
+about — see the "verified" note on each.
+
+| Scenario | What happens | Verified |
+|---|---|---|
+| **Off-topic query** ("what's the weather today") | Distinct `off_topic=true` response — no eligibility claim, no DLSA push, just "this tool helps with legal problems." | ✅ Fixed a real bug: the eligibility cue `"her "` was matching as a *substring* inside `"weather"`, so this query used to be told "you likely qualify for free legal aid as a woman." |
+| **Vague/short query** ("help me") | Routes to `off_topic=true` (no keyword/LLM signal matched anything) rather than guessing a vertical. | ✅ |
+| **Multiple legal issues in one query** ("my husband, a factory worker, hasn't been paid, and he beats me") | Only ONE vertical is chosen (routed to `wages`; the domestic-violence content was not addressed at all). **Known limitation, not fixed.** | ✅ tested — confirms the gap is real, not theoretical |
+| **False-positive substring keyword matches** (e.g. `"site"` inside `"opposite"`) | Fixed — `text_match.py` requires whole-word matches for both Planner routing keywords and eligibility cues. | ✅ |
+| **Document-only input** (no voice, no text) | Works — OCR text alone reaches the Planner via `combined_text`. | ✅ |
+| **Voice + multiple documents together** | All feed into one `combined_text`; each document is OCR'd independently. | ✅ |
+| **Blank / unreadable image** | OCR returns `""` at 0.0 confidence rather than inventing text; `combined_text` ends up empty or voice-only, routes normally (to `off_topic` if nothing else was said). | ✅ |
+| **Invalid/unsupported language code** (e.g. `lang="xyz"`) | Translation backends reject it → falls back to English with an honest error note, doesn't crash. | ✅ |
+| **Very weak/no retrieval matches** | Reasoning sets `insufficient_context=true` and the graph retries Retrieval (bounded, max 2) before ever drafting from thin air; if still nothing, `reasoning_backend="none"`, empty draft, and the low-confidence path escalates to a human. | design-verified (bounded loop, tested in eval) |
+| **Answer text over Sarvam's 2000-char translation limit** | Fixed — chunked on sentence boundaries, translated per-chunk, rejoined. Real answers are almost always over this limit. | ✅ (2080-char real answer) |
+| **Severity ≠ emotional urgency** | Severity/deadline come from `deadlines.json`'s real limitation periods per vertical, NOT from how urgent the query *sounds*. A calmly-worded wage complaint and a frantic one get the same `amber` if the underlying legal deadline is the same. This is an intentional design boundary (arch doc: "red means an actual clock is running... not vibes"), not a bug. | by design |
+| **Non-Indian-language / unsupported language speech** | Not a primary use case — Sarvam's auto-detect covers 23 Indian languages + English; a genuinely foreign language may mis-transcribe. Not specifically tested. | ⚠️ known gap |
+| **All inputs empty** (no text, no audio, no document) | CLI/app/API all reject with a clear message rather than silently invoking the graph on nothing. | ✅ |
 
 ---
 
@@ -302,8 +524,8 @@ Unreachable UNO Q → send fails **softly** (phone-only fallback).
 
 ---
 
-## Latest eval (default backend degrading to `extractive`, 25 gold cases across
-4 verticals — corpus from the real Act PDFs)
+## Latest eval (default backend degrading to `extractive`, 27 gold cases across
+4 verticals + off-topic regression cases — corpus from the real Act PDFs)
 ```
 Routing (vertical)     : 100%
 Routing (support flag) : 100%
@@ -312,6 +534,7 @@ Grounded (supported)   : 100%
 Escalation decision    : 100%
 Aid handoff present    : 100%
 Severity match         : 100%
+Eligibility detection  : 3/3
 ```
 `python -m justicebridge.eval.run_eval`. On the Snapdragon AI PC with
 `JB_LLM_BACKEND=geniex` this scores the real on-device reasoning path.
@@ -324,10 +547,13 @@ See `justicebridge/.env.example` for a ready-to-copy template.
 **Backends**
 | var | default | purpose |
 |---|---|---|
-| `SARVAM_API_KEY` | — | Sarvam STT/OCR/TTS (from `.env` or env) |
+| `SARVAM_API_KEY` | — | Sarvam STT/OCR/TTS/translation (from `.env` or env) |
 | `JB_ASR_BACKEND` | `sarvam` | `sarvam` \| `whisper` |
 | `JB_VISION_BACKEND` | `sarvam` | `sarvam` \| `tesseract` |
 | `JB_TTS_BACKEND` | `sarvam` | `sarvam` \| `pyttsx3` \| `none` |
+| `JB_TRANSLATION_BACKEND` | `sarvam` | `sarvam` \| `indictrans2` (on-device) \| `none` |
+| `JB_SARVAM_TRANSLATE_MODEL` | `sarvam-translate:v1` | Sarvam translation model |
+| `JB_INDICTRANS2_MODEL` | `ai4bharat/indictrans2-en-indic-dist-200M` | on-device translation model |
 | `JB_LLM_BACKEND` | `geniex` | `geniex` \| `onnx_qnn` \| `openai` \| `extractive` |
 | `JB_GENIEX_MODEL` | `ai-hub-models/Llama-v3.1-8B-Instruct` | AI Hub bundle id or a GGUF HF repo |
 | `JB_ONNX_QNN_MODEL_DIR` | — | path to an AI Hub `genai_config.json` bundle dir |

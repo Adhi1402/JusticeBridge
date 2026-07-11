@@ -25,7 +25,8 @@ requests                  # OpenAI-compatible LLM backend + doc download
 pdfplumber                # PDF text extraction
 
 # ---- Speech + Vision (the "Part A" input tier) ----
-sarvamai                  # Sarvam Saaras v3 STT, Bulbul v3 TTS, Doc Intelligence OCR
+sarvamai                  # Sarvam Saaras v3 STT, Bulbul v3 TTS, Doc Intelligence OCR,
+                          # text.translate (sarvam-translate:v1)
 python-dotenv             # load SARVAM_API_KEY from .env
 faster-whisper            # on-device/offline ASR fallback
 pyttsx3                   # on-device/offline TTS fallback

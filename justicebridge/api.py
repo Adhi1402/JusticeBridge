@@ -39,9 +39,14 @@ app = FastAPI(title="JusticeBridge API", version="0.1.0")
 class AskRequest(BaseModel):
     text_input: str | None = None
     audio_base64: str | None = None     # WAV bytes, base64-encoded
-    image_base64: str | None = None     # PNG/JPG bytes, base64-encoded
+    image_base64: str | None = None     # single document, base64 (back-compat)
+    images_base64: list[str] | None = None  # multiple documents, base64 each
     lang: str = "en"                    # en | ta | hi | te
     want_tts: bool = False              # force spoken-answer synthesis
+
+    # Every input is OPTIONAL — text_input, audio_base64, image(s)_base64 can
+    # be given in any combination, as long as at least one is present. Voice
+    # and document are never both required.
 
 
 # Fields returned to the caller — a deliberate ALLOWLIST, not "dump all of
@@ -88,15 +93,24 @@ def kb_stores():
 
 @app.post("/ask")
 def ask(req: AskRequest):
-    """Run one query through the full pipeline. Returns the allowlisted
-    result fields; `audio_response_base64` is included only if TTS ran."""
+    """Run one query through the full pipeline. text_input/audio/image(s) are
+    all optional — give any combination, at least one. Returns the
+    allowlisted result fields; `audio_response_base64` is included only if
+    TTS ran."""
     init = {"lang": req.lang, "want_tts": req.want_tts}
     if req.text_input:
         init["text_input"] = req.text_input
     if req.audio_base64:
         init["audio_bytes"] = base64.b64decode(req.audio_base64)
+
+    image_b64_list = list(req.images_base64 or [])
     if req.image_base64:
-        init["image"] = Image.open(io.BytesIO(base64.b64decode(req.image_base64)))
+        image_b64_list.append(req.image_base64)
+    if image_b64_list:
+        init["images"] = [Image.open(io.BytesIO(base64.b64decode(b))) for b in image_b64_list]
+
+    if not init.get("text_input") and not init.get("audio_bytes") and not init.get("images"):
+        return {"error": ["Provide at least one of: text_input, audio_base64, image_base64/images_base64"]}
 
     state = get_app().invoke(init)
 
