@@ -1,0 +1,47 @@
+{
+  "_note": "Offline DLSA / Taluka / Tele-Law directory. This is a LOOKUP over structured data — zero hallucination risk (arch doc Section 4). Phone numbers/hours below are ILLUSTRATIVE placeholders and MUST be replaced with verified NALSA/SLSA data before any real deployment. Keyed by district (lowercased). 'default' is used when the kiosk's district is unknown.",
+  "state": "Tamil Nadu",
+  "state_helpline": "1516 (NALSA national legal aid helpline)",
+  "districts": {
+    "kanchipuram": {
+      "name": "DLSA Kanchipuram",
+      "authority": "District Legal Services Authority, Kanchipuram",
+      "chair": "District & Sessions Judge, Kanchipuram",
+      "address": "District Court Complex, Kanchipuram, Tamil Nadu 631501",
+      "phone": "044-2723-XXXX",
+      "hours": "Mon-Fri, 10:00-17:00",
+      "taluka_committee": "Taluka Legal Services Committee, Kanchipuram",
+      "bring": "Aadhaar/voter ID, and any proof of work (pay slip, attendance, messages, contractor's name/number)"
+    },
+    "chennai": {
+      "name": "DLSA Chennai",
+      "authority": "District Legal Services Authority, Chennai",
+      "chair": "Principal District & Sessions Judge, Chennai",
+      "address": "Combined Court Building, Chennai, Tamil Nadu 600104",
+      "phone": "044-2534-XXXX",
+      "hours": "Mon-Fri, 10:00-17:00",
+      "taluka_committee": "Taluka Legal Services Committee, Chennai",
+      "bring": "Aadhaar/voter ID, and any proof of work (pay slip, attendance, messages, contractor's name/number)"
+    },
+    "default": {
+      "name": "Nearest District Legal Services Authority (DLSA)",
+      "authority": "District Legal Services Authority",
+      "chair": "District & Sessions Judge (chairs every DLSA)",
+      "address": "Located at your district court complex",
+      "phone": "1516 (NALSA legal aid helpline — connects you to your DLSA)",
+      "hours": "Mon-Fri, working hours",
+      "taluka_committee": "Your Taluka Legal Services Committee (at the taluk/mandal level, closer than the district HQ)",
+      "bring": "Aadhaar/voter ID, and any proof of work (pay slip, attendance, messages, contractor's name/number)"
+    }
+  },
+  "tele_law": {
+    "name": "Tele-Law",
+    "what": "Free lawyer consultation via video/phone at your nearest Common Service Centre (CSC).",
+    "helpline": "Ask at any Common Service Centre (CSC) / VLE for a Tele-Law session.",
+    "note": "Designed for rural/semi-urban reach. Verify current scheme details before demo."
+  },
+  "lok_adalat": {
+    "name": "Lok Adalat",
+    "what": "Forum for quick, amicable settlement. Awards are final with NO appeal — fast, but understand the trade-off before agreeing."
+  }
+}

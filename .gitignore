@@ -1,0 +1,19 @@
+# JusticeBridge repo — track ONLY the justicebridge package (the main folder).
+# Everything else at the repo root (the virtualenv, the earlier scratch/
+# prototype files, duplicate agent folders) is intentionally not committed.
+
+# ignore everything at the top level...
+/*
+# ...except the package and repo meta files
+!/.gitignore
+!/README.md
+!/justicebridge/
+
+# within the tracked package, still exclude caches + secrets + scratch
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.env
+.DS_Store
+*.log

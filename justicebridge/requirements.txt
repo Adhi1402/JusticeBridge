@@ -1,0 +1,58 @@
+# ============================================================================
+# JusticeBridge — Python dependencies
+# ----------------------------------------------------------------------------
+#   pip install -r justicebridge/requirements.txt
+# The Snapdragon-only on-device LLM backends (geniex / onnxruntime-genai) are
+# intentionally NOT installed by default — see the LLM section at the bottom.
+# ============================================================================
+
+# ---- Core orchestration + retrieval ----
+langgraph                 # the agent state machine
+langchain-core            # @tool wrappers
+langchain-community       # Chroma + BM25 retrievers
+langchain-text-splitters  # corpus chunking
+chromadb                  # per-KB-store vector collections
+sentence-transformers     # all-MiniLM-L6-v2 embeddings (offline after 1st run)
+rank_bm25                 # keyword retrieval
+requests                  # OpenAI-compatible LLM backend + doc download
+
+# ---- Corpus building (from the real Act PDFs) ----
+pdfplumber                # PDF text extraction
+
+# ---- Speech + Vision (the "Part A" input tier) ----
+sarvamai                  # Sarvam Saaras v3 STT, Bulbul v3 TTS, Doc Intelligence OCR
+python-dotenv             # load SARVAM_API_KEY from .env
+faster-whisper            # on-device/offline ASR fallback
+pyttsx3                   # on-device/offline TTS fallback
+pytesseract               # offline OCR fallback (also needs the Tesseract-OCR
+                          # binary installed on the OS, separately)
+pillow                    # image handling
+
+# ---- Frontend + multi-device ----
+streamlit                 # the demo UI (mic + camera + severity light)
+fastapi                   # UNO Q mock listener (optional)
+uvicorn                   # UNO Q mock listener (optional)
+
+# ---- Translation (optional — falls back to English if absent) ----
+# IndicTransToolkit
+# transformers            # IndicTrans2 en->indic
+
+# ============================================================================
+# On-device LLM backend for the Reasoning + Planner agents (install ONE on the
+# target hardware; set JB_LLM_BACKEND). NONE is required for the pipeline to
+# run — it degrades to a grounded, extractive answer built from retrieved
+# statute text (JB_LLM_BACKEND=extractive), which is what runs on a non-
+# Snapdragon dev machine.
+#
+#   geniex                # Qualcomm GenieX (QAIRT/Genie). NPU on the Snapdragon
+#                         # AI PC. Native SDK only builds on win32/arm64 or
+#                         # linux/aarch64 — will NOT pip install on x64.
+#                         # JB_LLM_BACKEND=geniex
+#
+#   onnxruntime-genai     # ORT + QNN execution provider on the Hexagon NPU,
+#                         # loading a Qualcomm AI Hub genai bundle.
+#                         # JB_LLM_BACKEND=onnx_qnn  JB_ONNX_QNN_MODEL_DIR=...
+#
+#   (no package)          # any OpenAI-compatible /v1 server (e.g. llama.cpp).
+#                         # JB_LLM_BACKEND=openai  JB_OPENAI_BASE_URL=...
+# ============================================================================
