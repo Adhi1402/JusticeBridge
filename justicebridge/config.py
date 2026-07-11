@@ -206,20 +206,18 @@ DEADLINE_AMBER_DAYS = int(os.environ.get("JB_DEADLINE_AMBER_DAYS", "120"))
 LOW_CONFIDENCE_ESCALATE = float(os.environ.get("JB_LOW_CONFIDENCE_ESCALATE", "0.55"))
 
 # ---------------------------------------------------------------------------
-# Fallback control — when an on-device/cloud backend is unavailable, agents
-# normally degrade silently (LLM -> extractive/keyword, Sarvam -> offline).
-# Set to "0" to DISABLE silent fallback for an agent: it will surface an
-# honest "unavailable" state instead of quietly using a lesser backend. The
-# pipeline still never crashes — it just escalates to a human sooner instead
-# of pretending a degraded answer is the real thing. Useful for: forcing a
-# demo to prove the real LLM/NPU path is live, or a UI team wanting to show
-# "reasoning temporarily unavailable" rather than a silently-swapped answer.
+# Fallback control — DEFAULT IS NO FALLBACK. When the configured LLM backend
+# is unavailable, Reasoning/Planner do NOT silently degrade to
+# extractive/keyword — they surface an honest "unavailable" state and the
+# pipeline escalates straight to a human, rather than answering with a lesser
+# backend without saying so. The pipeline still never crashes.
 #
-#   JB_ALLOW_LLM_FALLBACK      -> master switch for both agents below
+# Set to "1" to explicitly opt IN to silent degradation instead.
+#   JB_ALLOW_LLM_FALLBACK       -> master switch for both agents below
 #   JB_ALLOW_REASONING_FALLBACK -> Reasoning agent only (default = master)
 #   JB_ALLOW_PLANNER_FALLBACK   -> Planner agent only   (default = master)
 # ---------------------------------------------------------------------------
-ALLOW_LLM_FALLBACK = os.environ.get("JB_ALLOW_LLM_FALLBACK", "1") == "1"
+ALLOW_LLM_FALLBACK = os.environ.get("JB_ALLOW_LLM_FALLBACK", "0") == "1"
 ALLOW_REASONING_FALLBACK = os.environ.get(
     "JB_ALLOW_REASONING_FALLBACK", "1" if ALLOW_LLM_FALLBACK else "0"
 ) == "1"
