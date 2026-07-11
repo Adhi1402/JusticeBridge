@@ -85,6 +85,49 @@ grounding ─[needs_redraft]─► reasoning                 (loop 2, bounded)
 
 ---
 
+## Which LLM does each agent use?
+
+**Only 4 of the 12 agents ever call an LLM, and all 4 share the SAME
+configured backend** — there is no separate model per agent. Whichever
+backend `JB_LLM_BACKEND` points at (`llm.py`'s single dispatcher) is what all
+four use; the other 8 agents use a dedicated non-LLM model (speech/OCR/
+embedding/translation/TTS model) or pure code + data lookups, and can never
+call an LLM regardless of configuration.
+
+| # | Agent | Uses an LLM? | Which model |
+|---|---|---|---|
+| 1 | ASR | ❌ No | Sarvam Saaras v3 / faster-whisper — speech-recognition models |
+| 2 | Vision | ❌ No | Sarvam Document Intelligence / Tesseract — OCR models |
+| 3 | Combine | ❌ No | — (string concatenation) |
+| 4 | **Planner** | ✅ Optional | *(shared backend — see below)* |
+| 5 | Retrieval | ❌ No | `sentence-transformers/all-MiniLM-L6-v2` — embedding/similarity model |
+| 6 | **Reasoning** | ✅ Optional | *(shared backend — see below)* |
+| 7 | **Grounding-Verify** | ✅ Optional, off by default (`JB_LLM_ASSISTED_GROUNDING=1`) | *(shared backend — see below)* |
+| 8 | Risk/Deadline | ❌ No, deliberately | — (real legal-clock data, never a model) |
+| 9 | **Escalation/Aid** | ✅ Optional, off by default (`JB_LLM_ASSISTED_ELIGIBILITY=1`) | *(shared backend — see below)* |
+| 10 | Translation | ❌ No | Sarvam `text.translate` / IndicTrans2 — machine-translation models, not LLMs |
+| 11 | Output | ❌ No | — (string templating) |
+| 12 | TTS | ❌ No | Sarvam Bulbul v3 / pyttsx3 — speech-synthesis models |
+
+**The shared backend** (`JB_LLM_BACKEND`, default `geniex`) — set once, used
+by Planner/Reasoning/Grounding/Escalation:
+
+| `JB_LLM_BACKEND` | Actual model | Where it runs |
+|---|---|---|
+| `geniex` (default) | `JB_GENIEX_MODEL`, default **`ai-hub-models/Llama-v3.1-8B-Instruct`** (Meta Llama 3.1 8B Instruct, NPU-compiled via Qualcomm AI Hub) — or any GGUF repo, e.g. a smaller Llama/Qwen/Phi model, via GenieX's llama.cpp backend | Snapdragon Hexagon NPU (or CPU/GPU for a GGUF model) |
+| `onnx_qnn` | Whatever Qualcomm AI Hub `genai_config.json` bundle `JB_ONNX_QNN_MODEL_DIR` points at — model-agnostic (Llama-3.2-3B, Phi-3.5-mini, etc., per whatever a teammate exported) | Snapdragon Hexagon NPU |
+| `openai` | `JB_OPENAI_MODEL`, default `llama-3-8b-instruct` — whatever model a teammate's llama.cpp/OpenAI-compatible server is actually serving | wherever that server runs (dev convenience) |
+| `extractive` (what's actually live on this dev box) | **No model at all.** | — |
+
+Since `geniex`/`onnx_qnn` need real Snapdragon ARM64 hardware (verified: they
+won't even `pip install` on this x64 dev machine), every test/eval run in
+this repo so far has exercised `extractive` — i.e., **zero LLM calls, by
+construction** — which is exactly why the pipeline is safe to demo before a
+model is ever loaded. Point `JB_LLM_BACKEND` at `geniex`/`onnx_qnn` on the
+real AI PC to bring the actual LLM online for all four agents at once.
+
+---
+
 ## The agents (each one, in detail)
 
 Every node returns only the keys it changes (partial state). ASR + Vision run
