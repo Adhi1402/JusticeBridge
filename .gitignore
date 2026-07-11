@@ -8,6 +8,7 @@
 !/.gitignore
 !/README.md
 !/justicebridge/
+!/.env
 
 # within the tracked package, still exclude caches + secrets + scratch
 __pycache__/
