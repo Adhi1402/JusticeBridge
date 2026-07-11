@@ -77,8 +77,9 @@ def run():
         ok_esc = bool(state.get("escalate")) == c["expect_escalate"]
         agg["escalate"] += ok_esc
 
+        expect_aid = c.get("expect_aid_handoff", True)
         has_aid = bool((state.get("dlsa_contact") or {}).get("phone"))
-        agg["handoff"] += has_aid
+        agg["handoff"] += (has_aid == expect_aid)
 
         ok_sev = state.get("severity") == c["expect_severity"]
         agg["severity"] += ok_sev
@@ -92,6 +93,12 @@ def run():
                 for i in c["expect_eligibility_ids"]
             )
             agg["eligibility"] += want_hit
+
+        # regression guard: off-topic queries must NOT produce a false
+        # eligibility claim (this is exactly the "her " inside "weather" bug)
+        if c.get("expect_eligibility_empty"):
+            agg["elig_total"] += 1
+            agg["eligibility"] += (state.get("eligibility_reasons", []) == [])
 
         print(f"{c['id']:7} {'Y' if ok_vert else 'N':9} {cite_mark:5} "
               f"{grnd_mark:5} {'Y' if ok_esc else 'N':4} {'Y' if has_aid else 'N':4} "

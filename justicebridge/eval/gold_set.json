@@ -23,5 +23,7 @@
   {"id": "f01", "query": "my husband beats me and his family demands dowry", "expected_vertical": "family", "expected_supported": true, "expected_sections": ["3", "18", "12"], "expect_escalate": true, "expect_severity": "green"},
   {"id": "f02", "query": "I am facing domestic violence and want a protection order and maintenance", "expected_vertical": "family", "expected_supported": true, "expected_sections": ["18", "20", "12"], "expect_escalate": true, "expect_severity": "green"},
   {"id": "stub01", "query": "My landlord is evicting me from my rented house", "expected_vertical": "tenancy", "expected_supported": false, "expected_sections": [], "expect_escalate": true, "expect_severity": "green"},
+  {"id": "offtopic01", "query": "what is the weather like today, I want to know the cricket score", "expected_vertical": null, "expected_supported": false, "expected_sections": [], "expect_escalate": false, "expect_severity": "green", "expect_aid_handoff": false, "expect_eligibility_empty": true},
+  {"id": "offtopic02", "query": "hello how are you doing", "expected_vertical": null, "expected_supported": false, "expected_sections": [], "expect_escalate": false, "expect_severity": "green", "expect_aid_handoff": false, "expect_eligibility_empty": true},
   {"id": "elig01", "query": "I am a woman worker, do I qualify for free legal aid for my wage problem", "expected_vertical": "wages", "expected_supported": true, "expected_sections": ["17", "45"], "expect_escalate": true, "expect_severity": "amber", "expect_eligibility_ids": ["woman", "industrial_workman"]}
 ]

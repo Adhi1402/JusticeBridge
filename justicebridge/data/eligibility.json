@@ -6,7 +6,7 @@
       "id": "woman",
       "label": "a woman",
       "automatic": true,
-      "cues": ["woman", "women", "she ", "her ", "wife", "widow", "lady", "girl", "mother", "daughter", "maid", "domestic worker", "housemaid"],
+      "cues": ["woman", "women", "she", "her", "wife", "widow", "lady", "girl", "mother", "daughter", "maid", "domestic worker", "housemaid"],
       "explanation": "All women are entitled to free legal aid regardless of income."
     },
     {

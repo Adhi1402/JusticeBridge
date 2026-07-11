@@ -68,10 +68,23 @@ def _unsupported_answer(state):
     )
 
 
+def _off_topic_answer():
+    """No legal content was detected at all — do NOT push a free-aid/DLSA
+    pitch (there is nothing to escalate), just clarify what this tool is for."""
+    return (
+        "I couldn't find a legal problem in what you said. This assistant "
+        "helps with legal questions — for example unpaid wages, a consumer "
+        "complaint, or a family/domestic issue. Please describe what "
+        "happened and I'll try to help."
+    )
+
+
 def output_agent(state: CaseState) -> dict:
     supported = state.get("supported", False)
 
-    if not supported:
+    if state.get("off_topic"):
+        answer = _off_topic_answer()
+    elif not supported:
         answer = _unsupported_answer(state)
     else:
         pieces = [

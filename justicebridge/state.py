@@ -50,7 +50,8 @@ class CaseState(TypedDict, total=False):
     kb_stores: list[str]             # which KB stores the Retrieval agent searches
     corpus_subset: list[str]         # alias of kb_stores (back-compat)
     output_template: Optional[str]
-    planner_backend: str             # "llm" | "keyword"
+    planner_backend: str             # "llm" | "keyword" | "unavailable"
+    off_topic: bool                  # True: no legal signal matched anything
 
     # ---- Retrieval ----
     retrieved_sections: list[Section]

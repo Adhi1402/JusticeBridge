@@ -21,12 +21,19 @@ Two routing modes, same output contract:
 
 Unsupported-but-recognised topics (tenancy, fir) route to supported=False so
 the graph short-circuits them to the human-handoff branch ("coming soon").
+
+`off_topic` distinguishes "no legal signal matched ANYTHING, not even a stub
+vertical" (e.g. "what's the weather today") from "matched a real-but-stub
+legal topic" (e.g. an eviction question) — the Output agent uses this to give
+a plain "this tool is for legal problems" response instead of a legal-aid
+pitch when there's genuinely no legal content in the query.
 """
 
 from ..state import CaseState
 from ..kb_registry import KB_STORES, STUB_VERTICALS, always_include_ids
 from .. import config
 from .. import llm
+from ..text_match import count_phrases
 
 
 def _keyword_scores(text):
@@ -34,9 +41,9 @@ def _keyword_scores(text):
     for sid, cfg in KB_STORES.items():
         if cfg.get("always_include"):
             continue  # free_aid is appended, not matched on its own
-        scores[sid] = sum(1 for kw in cfg["planner_keywords"] if kw in text)
+        scores[sid] = count_phrases(text, cfg["planner_keywords"])
     for sid, cfg in STUB_VERTICALS.items():
-        scores[sid] = sum(1 for kw in cfg["planner_keywords"] if kw in text)
+        scores[sid] = count_phrases(text, cfg["planner_keywords"])
     return scores
 
 
@@ -69,6 +76,7 @@ def planner_agent(state: CaseState) -> dict:
     empty = {
         "vertical": None, "supported": False, "kb_stores": [],
         "corpus_subset": [], "output_template": None, "planner_backend": "keyword",
+        "off_topic": True,
     }
     if not text.strip():
         return empty
@@ -88,8 +96,10 @@ def planner_agent(state: CaseState) -> dict:
     if llm_unavailable and not config.ALLOW_PLANNER_FALLBACK:
         # Fallback disabled: don't silently switch to keyword routing when the
         # model is simply down. Surface it honestly and route to the safe
-        # unsupported/human-handoff branch, same as "nothing matched".
-        return {**empty, "planner_backend": "unavailable",
+        # unsupported/human-handoff branch, same as "nothing matched". This is
+        # a backend-availability issue, not a signal about the query itself,
+        # so it is NOT treated as off_topic.
+        return {**empty, "planner_backend": "unavailable", "off_topic": False,
                 "error": ["Planner LLM unavailable and fallback disabled"]}
 
     # Keyword scoring — either the normal secondary signal (LLM is live but
@@ -98,7 +108,7 @@ def planner_agent(state: CaseState) -> dict:
         scores = _keyword_scores(text)
         best = max(scores, key=scores.get) if scores else None
         if best is None or scores[best] == 0:
-            return empty
+            return empty  # off_topic=True: no legal signal matched anything
         chosen, backend = best, "keyword"
 
     # ---- resolve the chosen id to a routing decision ----
@@ -106,6 +116,7 @@ def planner_agent(state: CaseState) -> dict:
         return {
             "vertical": chosen, "supported": False, "kb_stores": [],
             "corpus_subset": [], "output_template": None, "planner_backend": backend,
+            "off_topic": False,  # matched a real (if unsupported) legal topic
         }
 
     if chosen in KB_STORES:
@@ -118,6 +129,7 @@ def planner_agent(state: CaseState) -> dict:
             "corpus_subset": kb_stores,
             "output_template": cfg.get("output_template"),
             "planner_backend": backend,
+            "off_topic": False,
         }
 
     return empty

@@ -28,6 +28,7 @@ import json
 from ..state import CaseState
 from .. import config
 from .. import llm
+from ..text_match import any_phrase
 
 with open(config.ELIGIBILITY_FILE, "r", encoding="utf-8") as _f:
     _ELIG = json.load(_f)
@@ -37,10 +38,10 @@ with open(config.DLSA_FILE, "r", encoding="utf-8") as _f:
 
 
 def _match_eligibility(text):
-    text = f" {text.lower()} "
+    text = text.lower()
     reasons = []
     for cat in _ELIG["categories"]:
-        if any(cue in text for cue in cat["cues"]):
+        if any_phrase(text, cat["cues"]):
             reasons.append(cat["explanation"])
     return reasons
 
@@ -87,8 +88,21 @@ def _lookup_dlsa(district):
 def escalation_agent(state: CaseState) -> dict:
     text = state.get("combined_text", "") or ""
     supported = state.get("supported", False)
+    off_topic = state.get("off_topic", False)
     composite = state.get("composite_confidence", 0.0) or 0.0
     severity = state.get("severity", "green")
+
+    # A query with NO legal signal at all gets no eligibility claim and no
+    # DLSA push — "you likely qualify for free legal aid" is meaningless (and
+    # was, before this fix, occasionally FALSE-POSITIVE-matched — see
+    # text_match.py) for a query like "what's the weather today".
+    if off_topic:
+        return {
+            "escalate": False,
+            "eligibility_reasons": [],
+            "dlsa_contact": None,
+            "severity": state.get("severity") or "green",
+        }
 
     reasons = _match_eligibility(text)
 
