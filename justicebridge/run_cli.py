@@ -39,7 +39,7 @@ try:
 except Exception:
     pass
 
-from graph import get_app
+from .graph import get_app
 from . import config, llm
 
 
