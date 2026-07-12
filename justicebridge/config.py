@@ -51,11 +51,11 @@ INDIACODE_JSON = os.environ.get("JB_INDIACODE") or _first_existing(
     default=DATA_DIR / "indiacode.json",
 )
 CORPUS_FILE = os.environ.get("JB_CORPUS", str(DATA_DIR / "corpus.json"))
-CHROMA_DIR = os.environ.get("JB_CHROMA", str(PACKAGE_DIR / "chroma_db"))
+VECTOR_DIR = os.environ.get("JB_VECTOR_DIR", os.environ.get("JB_CHROMA", str(PACKAGE_DIR / "chroma_db")))
 EMBEDDING_MODEL = os.environ.get("JB_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 
 # The catalogue of legal-topic KB stores lives in kb_registry.py. Each store
-# is its own Chroma collection. build_corpus.py reads acts_by_store() to know
+# is its own FAISS index. build_corpus.py reads acts_by_store() to know
 # which Act PDFs to fetch and which store to tag each chunk with.
 from .kb_registry import KB_STORES, acts_by_store  # noqa: E402  (single source of truth)
 
@@ -68,53 +68,76 @@ ELIGIBILITY_FILE = DATA_DIR / "eligibility.json"
 # ---------------------------------------------------------------------------
 # LLM backend (pluggable — the graph is model-agnostic, per the arch doc)
 #
-#   JB_LLM_BACKEND = "geniex"     -> Qualcomm GenieX (QAIRT/Genie under the
-#                                    hood). THE primary path: on the Snapdragon
-#                                    AI PC it loads an NPU-compiled Qualcomm AI
-#                                    Hub bundle; the same API also runs a GGUF
-#                                    model via its llama.cpp backend for local
-#                                    dev on a machine with an NPU. Note:
-#                                    GenieX's native SDK only ships prebuilt
-#                                    binaries for win32/arm64 and linux/aarch64
-#                                    (verified: `pip install geniex` fails to
-#                                    build on this x64 dev box with
-#                                    "Unsupported platform ('win32', 'amd64')"
-#                                    — that's expected; it's gated to real
-#                                    Snapdragon silicon by design).
+#   JB_LLM_BACKEND = "geniex"     -> Qualcomm GenieX running a pre-compiled
+#                                    Hexagon-NPU bundle (QnnHtp backend) via
+#                                    QAIRT. THE default on real Snapdragon
+#                                    silicon: ~15x faster than the CPU ONNX
+#                                    path on this hardware (1.9s vs 28.7s for
+#                                    an equivalent short prompt, verified),
+#                                    same answer quality. Requires a Qualcomm
+#                                    AI Hub account (free) + `qai-hub configure
+#                                    --api_token <token>` once, then:
+#                                      pip install qai-hub qai_hub_models qai_hub_models_cli platformdirs
+#                                      qai-hub-models fetch qwen3-4b-instruct-2507 -r geniex_qairt -p w4a16 -c "Snapdragon X Elite"
+#                                    (swap the chipset name for your device;
+#                                    `qai-hub-models chipsets` lists them).
+#                                    Falls back to "onnx" automatically if the
+#                                    bundle isn't fetched / GenieX can't load
+#                                    (e.g. a non-Snapdragon dev box).
+#                  = "onnx"        -> onnxruntime-genai running Phi-3-mini-4k
+#                                    -instruct-onnx (CPU int4) fully on-device.
+#                                    Universal fallback: works on any x64/arm64
+#                                    machine, no special hardware or account
+#                                    required, just slower.
 #                  = "onnx_qnn"   -> onnxruntime-genai with the QNN execution
 #                                    provider, running a Qualcomm AI Hub
 #                                    -exported genai_config.json bundle
-#                                    directly on the Hexagon NPU. A second,
-#                                    lower-level on-device path (Python-native
-#                                    ORT session) — pick this if a teammate
-#                                    already has an AI-Hub ONNX export instead
+#                                    directly on the Hexagon NPU. Lower-level
+#                                    alternative to "geniex" for the same NPU
+#                                    if you have a raw ONNX QNN export instead
 #                                    of a GenieX bundle.
 #                  = "openai"     -> any OpenAI-compatible /v1 endpoint, e.g. a
 #                                    llama.cpp server a teammate stood up
 #                                    separately. Dev-machine convenience only.
 #                  = "extractive" -> NO LLM: build the answer directly from
 #                                    retrieved statute text. Always available,
-#                                    fully offline, zero hallucination. This is
-#                                    the guaranteed fallback so the pipeline
-#                                    NEVER hard-fails on stage, and it's what
-#                                    actually runs on this x64 dev machine
-#                                    since geniex/onnx_qnn need real Snapdragon
-#                                    NPU hardware to test end-to-end.
+#                                    fully offline, zero hallucination. Last-
+#                                    resort fallback if no model can load.
 #
 # The reasoning agent tries the configured backend and, if it is unavailable
-# (wrong hardware, missing model, network down, ...) or errors, silently
+# (missing model, disk full, generation error, ...) or errors, silently
 # degrades to "extractive" — so a demo device without a loaded model still
 # produces a correct, grounded answer instead of crashing.
 # ---------------------------------------------------------------------------
 LLM_BACKEND = os.environ.get("JB_LLM_BACKEND", "geniex")
 
-# GenieX model source — EITHER a Qualcomm AI Hub pre-compiled NPU bundle
-# ("ai-hub-models/<name>", the real hackathon deployment target) OR a GGUF
-# repo on Hugging Face (runs via GenieX's llama.cpp backend). See
+# Offline ONNX Runtime backend — Phi-3-mini-4k-instruct-onnx, CPU int4 build.
+# Downloaded once via huggingface_hub into ONNX_MODEL_CACHE_ROOT, then loaded
+# purely from disk on every subsequent run (see llm.py:_ensure_onnx_model_cached).
+ONNX_MODEL_REPO = os.environ.get("JB_ONNX_MODEL_REPO", "microsoft/Phi-3-mini-4k-instruct-onnx")
+ONNX_MODEL_SUBFOLDER = os.environ.get(
+    "JB_ONNX_MODEL_SUBFOLDER", "cpu_and_mobile/cpu-int4-rtn-block-32-acc-level-4"
+)
+ONNX_MODEL_CACHE_ROOT = os.environ.get(
+    "JB_ONNX_MODEL_CACHE_ROOT", str(PACKAGE_DIR / "models" / "phi3-mini-onnx")
+)
+ONNX_MODEL_DIR = os.environ.get(
+    "JB_ONNX_MODEL_DIR", str(Path(ONNX_MODEL_CACHE_ROOT) / ONNX_MODEL_SUBFOLDER)
+)
+ONNX_MAX_LENGTH = int(os.environ.get("JB_ONNX_MAX_LENGTH", "4000"))  # Phi-3-mini-4k context is 4096
+
+# GenieX model source — a Qualcomm AI Hub pre-compiled NPU bundle, fetched
+# once via:
+#   qai-hub-models fetch qwen3-4b-instruct-2507 -r geniex_qairt -p w4a16 -c "Snapdragon X Elite"
+# which downloads a real Hexagon-NPU-targeted (QnnHtp backend) bundle into
+# GenieX's own cache (~/.cache/geniex/models/<GENIEX_MODEL>). Verified on this
+# Snapdragon X Elite device: ~15x faster than the CPU ONNX backend (1.9s vs
+# 28.7s for the same short prompt) with equivalent answer quality. See
 # https://github.com/qualcomm/GenieX
-GENIEX_MODEL = os.environ.get("JB_GENIEX_MODEL", "ai-hub-models/Llama-v3.1-8B-Instruct")
+GENIEX_MODEL = os.environ.get("JB_GENIEX_MODEL", "qualcomm/Qwen3-4B-Instruct-2507")
+GENIEX_DEVICE_MAP = os.environ.get("JB_GENIEX_DEVICE_MAP", "qairt")
 GENIEX_PRECISION = os.environ.get("JB_GENIEX_PRECISION", "Q4_0")  # only used for GGUF models
-GENIEX_MAX_NEW_TOKENS = int(os.environ.get("JB_GENIEX_MAX_NEW_TOKENS", "400"))
+GENIEX_MAX_NEW_TOKENS = int(os.environ.get("JB_GENIEX_MAX_NEW_TOKENS", "512"))
 
 # onnxruntime-genai model bundle dir (contains genai_config.json + tokenizer +
 # QNN context binaries), produced by `qai_hub_models.models.<model>.export`.
@@ -129,39 +152,42 @@ OPENAI_API_KEY = os.environ.get("JB_OPENAI_API_KEY", "sk-no-key-required")
 LLM_TIMEOUT = float(os.environ.get("JB_LLM_TIMEOUT", "60"))
 
 # ---------------------------------------------------------------------------
-# Speech / Vision backends (the "Part A" input tier)
+# Speech / Vision / Translation backends (the "Part A" input tier) — all
+# fully offline/on-device. Every agent follows the same graceful-degradation
+# contract as the LLM backend: try the configured backend, degrade to
+# "extractive"-style passthrough on failure, never hard-crash.
 #
-# All follow the same graceful-degradation contract as the LLM backend: try
-# the configured backend, fall back on any failure, never hard-crash.
+#   JB_ASR_BACKEND    = "whisper"     -> Whisper via transformers, fully
+#                                        on-device/offline. Only backend.
 #
-#   JB_ASR_BACKEND    = "sarvam"    -> Sarvam Saaras v3 STT (cloud; 23 Indian
-#                                      languages; auto lang-detect). Network +
-#                                      SARVAM_API_KEY.
-#                     = "whisper"   -> faster-whisper, fully on-device/offline.
+#   JB_TTS_BACKEND    = "mms"         -> Meta MMS-TTS (facebook/mms-tts-<lang>),
+#                                        a real neural on-device model with a
+#                                        dedicated checkpoint per language
+#                                        (en/hi/ta/te). Default — the ONLY
+#                                        backend that can correctly speak
+#                                        translated Hindi/Tamil/Telugu answers.
+#                     = "pyttsx3"     -> offline OS TTS (SAPI5/NSSpeech/espeak).
+#                                        Only as good as whatever voices the OS
+#                                        has installed — commonly English-only
+#                                        on a stock Windows box, which silently
+#                                        mispronounces non-Latin-script text
+#                                        rather than failing loudly.
+#                     = "none"        -> skip spoken output.
 #
-#   JB_TTS_BACKEND    = "sarvam"    -> Sarvam Bulbul v3 TTS (cloud; speaks the
-#                                      answer back in the detected language).
-#                     = "pyttsx3"   -> offline OS TTS fallback.
-#                     = "none"      -> skip spoken output.
+#   JB_VISION_BACKEND = "tesseract"   -> fully offline OCR. Only backend.
 #
-#   JB_VISION_BACKEND = "sarvam"    -> Sarvam Document Intelligence OCR (cloud;
-#                                      Indian-language documents).
-#                     = "tesseract" -> fully offline OCR fallback.
-#
-#   JB_TRANSLATION_BACKEND = "sarvam"     -> Sarvam text.translate (cloud;
-#                                      model sarvam-translate:v1 / mayura:v1).
-#                     = "indictrans2" -> ai4bharat/indictrans2-en-indic-dist
-#                                      -200M, a real ON-DEVICE MT model
-#                                      (~200M params, lazy-loaded, runs
-#                                      locally via transformers — no network
-#                                      needed once cached). This is what to
-#                                      use for a fully offline deployment.
+#   JB_TRANSLATION_BACKEND = "nllb"    -> facebook/nllb-200-distilled-600M, a
+#                                        real ON-DEVICE MT model (200
+#                                        languages incl. Hindi/Tamil/Telugu),
+#                                        lazy-loaded via transformers — no
+#                                        network needed once cached. Public/
+#                                        ungated (ai4bharat/indictrans2 is
+#                                        India-specific and in principle
+#                                        higher quality, but is a GATED HF
+#                                        repo requiring manual access approval
+#                                        — set JB_TRANSLATION_BACKEND back to
+#                                        it manually once you have access).
 #                     = "none"        -> skip translation, English passthrough.
-#                   Falls back sarvam -> indictrans2 -> English on any failure.
-#
-# SARVAM_API_KEY is read from the environment (or a .env file — see
-# python-dotenv load below). NEVER hard-code the key here: this file is
-# committed to git. Put it in .env (git-ignored) or export it.
 # ---------------------------------------------------------------------------
 try:
     from dotenv import load_dotenv
@@ -169,17 +195,17 @@ try:
 except Exception:
     pass
 
-ASR_BACKEND = os.environ.get("JB_ASR_BACKEND", "sarvam")
-TTS_BACKEND = os.environ.get("JB_TTS_BACKEND", "sarvam")
-VISION_BACKEND = os.environ.get("JB_VISION_BACKEND", "sarvam")
-TRANSLATION_BACKEND = os.environ.get("JB_TRANSLATION_BACKEND", "sarvam")
+ASR_BACKEND = os.environ.get("JB_ASR_BACKEND", "whisper")
+TTS_BACKEND = os.environ.get("JB_TTS_BACKEND", "mms")
+VISION_BACKEND = os.environ.get("JB_VISION_BACKEND", "tesseract")
+TRANSLATION_BACKEND = os.environ.get("JB_TRANSLATION_BACKEND", "nllb")
 
-SARVAM_API_KEY = os.environ.get("SARVAM_API_KEY", "")
-SARVAM_OCR_LANGUAGE = os.environ.get("JB_SARVAM_LANG", "en-IN")
-SARVAM_STT_MODEL = os.environ.get("JB_SARVAM_STT_MODEL", "saaras:v3")
-SARVAM_TTS_MODEL = os.environ.get("JB_SARVAM_TTS_MODEL", "bulbul:v3")
-SARVAM_TTS_SPEAKER = os.environ.get("JB_SARVAM_TTS_SPEAKER", "priya")
-SARVAM_TRANSLATE_MODEL = os.environ.get("JB_SARVAM_TRANSLATE_MODEL", "sarvam-translate:v1")
+NLLB_MODEL = os.environ.get("JB_NLLB_MODEL", "facebook/nllb-200-distilled-600M")
+# Beam search width for NLLB decoding. NLLB runs on plain CPU (no NPU path
+# exists for it) and is, measured, the single slowest agent in the pipeline
+# (~75s at num_beams=5 for a typical answer). Lower beams trade a small amount
+# of fluency for meaningfully lower latency on CPU beam search.
+NLLB_NUM_BEAMS = int(os.environ.get("JB_NLLB_NUM_BEAMS", "2"))
 INDICTRANS2_MODEL = os.environ.get("JB_INDICTRANS2_MODEL", "ai4bharat/indictrans2-en-indic-dist-200M")
 WHISPER_MODEL = os.environ.get("JB_WHISPER_MODEL", "small")
 WHISPER_DEVICE = os.environ.get("JB_WHISPER_DEVICE", "cpu")          # cpu | cuda
@@ -193,8 +219,22 @@ RETRIEVAL_K = int(os.environ.get("JB_RETRIEVAL_K", "8"))
 # Below this fused-retrieval signal, the Reasoning agent flags
 # insufficient_context and the graph loops back to Retrieval (bounded).
 RETRIEVAL_MIN_SIM = float(os.environ.get("JB_RETRIEVAL_MIN_SIM", "0.02"))  # floor, not a cosine
-MAX_RETRIEVAL_RETRIES = int(os.environ.get("JB_MAX_RETRIEVAL_RETRIES", "2"))
-MAX_GROUNDING_RETRIES = int(os.environ.get("JB_MAX_GROUNDING_RETRIES", "2"))
+# Each retry re-runs retrieval with k widened by +3 AND, if it's a grounding
+# retry, a full extra LLM reasoning call (~13-15s on NPU, much more on CPU).
+# Measured: a real query hit both retries, ballooning retrieval from 8 to 14
+# sections (mostly low-relevance noise, see RELEVANCE_FLOOR below) and roughly
+# doubling total pipeline latency for no accuracy gain. 1 retry (not 2) is
+# enough headroom for genuinely thin corpora without paying for a second,
+# usually-futile widening pass.
+MAX_RETRIEVAL_RETRIES = int(os.environ.get("JB_MAX_RETRIEVAL_RETRIES", "1"))
+MAX_GROUNDING_RETRIES = int(os.environ.get("JB_MAX_GROUNDING_RETRIES", "1"))
+# Semantic hits below this relevance score are dropped before fusion — without
+# this, a store with no real match (e.g. free_aid for an off-topic query)
+# still contributes its top-k *worst available* chunks at negative relevance
+# scores, which the RRF fusion below treats as normal candidates purely by
+# rank. Measured: this is exactly what let 6+ irrelevant Legal-Services-Act
+# administrative sections into a wages-query reasoning prompt.
+RETRIEVAL_RELEVANCE_FLOOR = float(os.environ.get("JB_RETRIEVAL_RELEVANCE_FLOOR", "0.15"))
 
 # ---------------------------------------------------------------------------
 # Risk / severity thresholds
@@ -206,8 +246,8 @@ DEADLINE_AMBER_DAYS = int(os.environ.get("JB_DEADLINE_AMBER_DAYS", "120"))
 LOW_CONFIDENCE_ESCALATE = float(os.environ.get("JB_LOW_CONFIDENCE_ESCALATE", "0.55"))
 
 # ---------------------------------------------------------------------------
-# Fallback control — when an on-device/cloud backend is unavailable, agents
-# normally degrade silently (LLM -> extractive/keyword, Sarvam -> offline).
+# Fallback control — when an on-device backend is unavailable, agents
+# normally degrade silently (LLM -> extractive/keyword).
 # Set to "0" to DISABLE silent fallback for an agent: it will surface an
 # honest "unavailable" state instead of quietly using a lesser backend. The
 # pipeline still never crashes — it just escalates to a human sooner instead
@@ -219,7 +259,7 @@ LOW_CONFIDENCE_ESCALATE = float(os.environ.get("JB_LOW_CONFIDENCE_ESCALATE", "0.
 #   JB_ALLOW_REASONING_FALLBACK -> Reasoning agent only (default = master)
 #   JB_ALLOW_PLANNER_FALLBACK   -> Planner agent only   (default = master)
 # ---------------------------------------------------------------------------
-ALLOW_LLM_FALLBACK = os.environ.get("JB_ALLOW_LLM_FALLBACK", "1") == "1"
+ALLOW_LLM_FALLBACK = os.environ.get("JB_ALLOW_LLM_FALLBACK", "0") == "1"
 ALLOW_REASONING_FALLBACK = os.environ.get(
     "JB_ALLOW_REASONING_FALLBACK", "1" if ALLOW_LLM_FALLBACK else "0"
 ) == "1"
@@ -234,7 +274,7 @@ ALLOW_PLANNER_FALLBACK = os.environ.get(
 # reasons, never fewer. Safe to leave off; useful once a real on-device model
 # is loaded and you want higher recall.
 #
-JB_LLM_ASSISTED_GROUNDING=1   #-> grounding_agent also asks the LLM
+#   JB_LLM_ASSISTED_GROUNDING=1   -> grounding_agent also asks the LLM
 #                                    "does section X actually support claim Y?"
 #   JB_LLM_ASSISTED_ELIGIBILITY=1 -> escalation_agent also asks the LLM to spot
 #                                    Section-12 categories the keyword list missed

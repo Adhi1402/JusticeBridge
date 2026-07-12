@@ -2,24 +2,25 @@
 Hybrid retrieval engine — the Retrieval agent's engine, now backed by a
 REGISTRY of per-topic KB stores.
 
-Each KB store (kb_registry.KB_STORES) is its own Chroma vector collection
-inside one persist dir, plus its own in-memory BM25 index. The Planner picks
-which store ids to search; retrieve() queries exactly those stores and fuses
-results. So "which vector DB does the next agent look at" is a real, explicit
-routing decision, not a metadata filter afterthought.
+Each KB store (kb_registry.KB_STORES) is its own FAISS vector index saved to
+disk, plus its own in-memory BM25 index. The Planner picks which store ids to
+search; retrieve() queries exactly those stores and fuses results. So "which
+vector DB does the next agent look at" is a real, explicit routing decision,
+not a metadata filter afterthought.
 
-Semantic (Chroma) + keyword (BM25) rankings are fused per store with
+Semantic (FAISS) + keyword (BM25) rankings are fused per store with
 Reciprocal Rank Fusion (RRF), then merged across stores by fused score.
 
 Public API:
     retrieve(query, kb_stores=[...], k=6) -> (sections, retrieval_sim)
-    build_index()  -> (re)builds every store's collection from corpus.json
+    build_index()  -> (re)builds every store's index from corpus.json
 """
 
 import json
 from pathlib import Path
 
-from langchain_community.vectorstores import Chroma
+from langchain_community.vectorstores import FAISS
+from langchain_community.vectorstores.utils import DistanceStrategy
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
@@ -71,11 +72,11 @@ def _load_docs_by_store():
 
 
 def _collection_dir(store_id):
-    return str(Path(config.CHROMA_DIR) / KB_STORES[store_id]["collection"])
+    return str(Path(config.VECTOR_DIR) / KB_STORES[store_id]["collection"])
 
 
 def build_index():
-    """Build (or rebuild) one persistent Chroma collection per KB store."""
+    """Build (or rebuild) one persistent FAISS index per KB store."""
     by_store = _load_docs_by_store()
     emb = _get_embeddings()
     for sid, docs in by_store.items():
@@ -84,12 +85,11 @@ def build_index():
             continue
         cdir = _collection_dir(sid)
         print(f"  [{sid}] embedding {len(docs)} chunks -> {cdir}")
-        Chroma.from_documents(
-            documents=docs,
-            embedding=emb,
-            collection_name=KB_STORES[sid]["collection"],
-            persist_directory=cdir,
+        vdb = FAISS.from_documents(
+            documents=docs, embedding=emb, distance_strategy=DistanceStrategy.COSINE
         )
+        Path(cdir).mkdir(parents=True, exist_ok=True)
+        vdb.save_local(cdir)
     print("All KB store collections built.")
 
 
@@ -100,24 +100,22 @@ def _ensure_store_loaded(store_id):
 
     if store_id not in _vectordb_by_store:
         cdir = _collection_dir(store_id)
-        if not Path(cdir).exists():
-            # build just this store's collection on demand
+        if not Path(cdir, "index.faiss").exists():
+            # build just this store's index on demand
             docs = _docs_by_store.get(store_id, [])
             if not docs:
                 _vectordb_by_store[store_id] = None
                 _bm25_by_store[store_id] = None
                 return
-            _vectordb_by_store[store_id] = Chroma.from_documents(
-                documents=docs,
-                embedding=_get_embeddings(),
-                collection_name=KB_STORES[store_id]["collection"],
-                persist_directory=cdir,
-            )
+            vdb = FAISS.from_documents(documents=docs, embedding=_get_embeddings())
+            Path(cdir).mkdir(parents=True, exist_ok=True)
+            vdb.save_local(cdir)
+            _vectordb_by_store[store_id] = vdb
         else:
-            _vectordb_by_store[store_id] = Chroma(
-                collection_name=KB_STORES[store_id]["collection"],
-                persist_directory=cdir,
-                embedding_function=_get_embeddings(),
+            _vectordb_by_store[store_id] = FAISS.load_local(
+                cdir,
+                _get_embeddings(),
+                allow_dangerous_deserialization=True,
             )
         docs = _docs_by_store.get(store_id, [])
         if docs:
@@ -140,9 +138,13 @@ def _search_store(store_id, query, k):
         sem_scored = vdb.similarity_search_with_relevance_scores(query, k=k)
     except Exception:
         sem_scored = []
-    semantic = [d for d, _s in sem_scored]
     sim = max((s for _d, s in sem_scored), default=0.0)
     sim = max(0.0, float(sim))
+    # Drop hits below the relevance floor before fusion — RRF below ranks by
+    # POSITION, not by relevance magnitude, so a store with no real match for
+    # this query would otherwise still contribute its top-k worst-available
+    # chunks (even at negative relevance) as if they were normal candidates.
+    semantic = [d for d, s in sem_scored if s >= config.RETRIEVAL_RELEVANCE_FLOOR]
 
     keyword = bm25.invoke(query) if bm25 else []
 

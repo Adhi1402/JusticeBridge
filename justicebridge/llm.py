@@ -1,37 +1,35 @@
 """
 Pluggable LLM client — the ONE place that talks to a language model.
 
-Primary path is Qualcomm's own on-device stack, not a generic cloud API:
+Primary path is a fully offline ONNX Runtime model — no cloud calls, no API
+keys, works with no network once the model is cached:
 
+    JB_LLM_BACKEND=onnx       -> onnxruntime-genai running Phi-3-mini-4k
+                                  -instruct-onnx (CPU int4 build) entirely
+                                  on-device. THE default backend: real
+                                  accuracy/latency, zero network dependency
+                                  after the model is cached once. Works on any
+                                  x64/arm64 machine, no NPU required.
     JB_LLM_BACKEND=geniex     -> GenieX (github.com/qualcomm/GenieX), a Python
-                                  wrapper over QAIRT/Genie. On the Snapdragon
-                                  AI PC it loads a Qualcomm AI Hub NPU bundle;
-                                  the same call also runs a GGUF model via
-                                  GenieX's llama.cpp backend, so the identical
-                                  code path works for local dev on any machine
-                                  with an NPU or GPU. NOTE: verified on this
-                                  x64 dev box that `pip install geniex` fails
-                                  to build ("Unsupported platform ('win32',
-                                  'amd64')") — its native SDK only ships
+                                  wrapper over QAIRT/Genie for Snapdragon NPU
+                                  hardware. Kept for the real hackathon target
+                                  device; NOTE: `pip install geniex` fails to
+                                  build on a generic x64 dev box ("Unsupported
+                                  platform") since its native SDK only ships
                                   prebuilt binaries for win32/arm64 and
-                                  linux/aarch64. That's expected: it's gated to
-                                  real Snapdragon silicon by design, so this
-                                  backend can only be exercised on the actual
-                                  hackathon hardware, not here.
+                                  linux/aarch64.
     JB_LLM_BACKEND=onnx_qnn   -> onnxruntime-genai + the QNN execution
                                   provider, running a Qualcomm AI Hub-exported
                                   genai_config.json bundle directly on the
-                                  Hexagon NPU. Lower-level Python-native
-                                  alternative to GenieX for the same hardware.
+                                  Hexagon NPU. Same idea as `onnx` but for
+                                  Snapdragon NPU hardware specifically.
     JB_LLM_BACKEND=openai     -> any OpenAI-compatible /v1 endpoint (e.g. a
                                   llama.cpp server a teammate stood up
                                   separately). Dev-machine convenience only.
     JB_LLM_BACKEND=extractive -> no model at all; reasoning_agent.py builds the
                                   answer directly from retrieved statute text.
-                                  Zero hallucination, always available. This is
-                                  what actually runs end-to-end on this x64 dev
-                                  box, since geniex/onnx_qnn need real
-                                  Snapdragon NPU hardware.
+                                  Zero hallucination, always available. Last-
+                                  resort fallback if the ONNX model can't load.
 
 Every backend raises LLMUnavailable on any failure (missing package, wrong
 platform, missing model files, generation error, network down, ...) so
@@ -55,7 +53,89 @@ class LLMUnavailable(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
-# GenieX (primary on-device backend — QAIRT/Genie under the hood)
+# onnxruntime-genai on CPU (primary offline backend — Phi-3-mini-4k-instruct)
+# ---------------------------------------------------------------------------
+_onnx_model = None
+_onnx_tokenizer = None
+
+
+def _ensure_onnx_model_cached() -> str:
+    """Return a local directory containing the Phi-3 ONNX CPU bundle,
+    downloading it once via huggingface_hub if not already cached. Every
+    subsequent call (and every subsequent run of the app) reuses the local
+    copy — no network needed once this has succeeded once."""
+    import os as _os
+
+    model_dir = config.ONNX_MODEL_DIR
+    if _os.path.isdir(model_dir) and _os.path.exists(_os.path.join(model_dir, "genai_config.json")):
+        return model_dir
+
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as e:
+        raise LLMUnavailable(f"huggingface_hub not installed, can't fetch ONNX model: {e}")
+    try:
+        snapshot_download(
+            repo_id=config.ONNX_MODEL_REPO,
+            allow_patterns=[f"{config.ONNX_MODEL_SUBFOLDER}/*"],
+            local_dir=config.ONNX_MODEL_CACHE_ROOT,
+        )
+    except Exception as e:
+        raise LLMUnavailable(
+            f"ONNX model not cached locally and download failed (offline?): {e}"
+        )
+    return model_dir
+
+
+def _get_onnx_model():
+    global _onnx_model, _onnx_tokenizer
+    if _onnx_model is None:
+        try:
+            import onnxruntime_genai as og
+        except ImportError as e:
+            raise LLMUnavailable(f"onnxruntime-genai not installed: {e}")
+        model_dir = _ensure_onnx_model_cached()
+        try:
+            og_config = og.Config(model_dir)
+            _onnx_model = og.Model(og_config)
+            _onnx_tokenizer = og.Tokenizer(_onnx_model)
+        except Exception as e:
+            raise LLMUnavailable(f"onnxruntime-genai failed to load '{model_dir}': {e}")
+    return _onnx_model, _onnx_tokenizer
+
+
+def _onnx_chat(system: str, user: str, temperature: float) -> str:
+    import onnxruntime_genai as og
+
+    model, tokenizer = _get_onnx_model()
+    try:
+        # Phi-3 chat template.
+        prompt = f"<|system|>\n{system}<|end|>\n<|user|>\n{user}<|end|>\n<|assistant|>\n"
+        input_tokens = tokenizer.encode(prompt)
+
+        params = og.GeneratorParams(model)
+        params.set_search_options(
+            max_length=config.ONNX_MAX_LENGTH,
+            temperature=max(temperature, 0.01),
+            do_sample=temperature > 0.01,
+        )
+        generator = og.Generator(model, params)
+        generator.append_tokens(input_tokens)
+
+        stream = tokenizer.create_stream()
+        chunks = []
+        while not generator.is_done():
+            generator.generate_next_token()
+            token = generator.get_next_tokens()[0]
+            chunks.append(stream.decode(token))
+        del generator
+        return "".join(chunks).strip()
+    except Exception as e:
+        raise LLMUnavailable(f"onnx generation failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# GenieX (Snapdragon on-device backend — QAIRT/Genie under the hood)
 # ---------------------------------------------------------------------------
 _geniex_model = None
 
@@ -73,9 +153,11 @@ def _get_geniex_model():
             kwargs = {}
             # precision only applies to GGUF (llama.cpp-backend) models, not
             # pre-compiled Qualcomm AI Hub NPU bundles.
-            if "GGUF" in config.GENIEX_MODEL.upper() or "/" in config.GENIEX_MODEL \
-                    and not config.GENIEX_MODEL.startswith("ai-hub-models/"):
+            if "qairt" in config.GENIEX_DEVICE_MAP.lower():
+                kwargs["device_map"] = config.GENIEX_DEVICE_MAP
+            else:
                 kwargs["precision"] = config.GENIEX_PRECISION
+                kwargs["device_map"] = "auto"
             _geniex_model = AutoModelForCausalLM.from_pretrained(config.GENIEX_MODEL, **kwargs)
         except Exception as e:
             raise LLMUnavailable(f"geniex failed to load '{config.GENIEX_MODEL}': {e}")
@@ -91,11 +173,16 @@ def _geniex_chat(system: str, user: str, temperature: float) -> str:
             prompt,
             max_new_tokens=config.GENIEX_MAX_NEW_TOKENS,
             temperature=temperature,
-            stream=False,
+            stream=True,
         )
-        # Defensive: some GenieX versions may return a generator even with
-        # stream=False depending on backend; handle both shapes.
-        text = result if isinstance(result, str) else "".join(chunk for chunk in result)
+        # Defensive: GenieX has returned a plain str, a GenerateOutput object
+        # (`.text` attribute), and a generator of chunks across versions.
+        if isinstance(result, str):
+            text = result
+        elif hasattr(result, "text"):
+            text = result.text
+        else:
+            text = "".join(chunk for chunk in result)
         return text.strip()
     except Exception as e:
         raise LLMUnavailable(f"geniex generation failed: {e}")
@@ -188,10 +275,21 @@ def _openai_chat(system: str, user: str, temperature: float) -> str:
 # Dispatcher
 # ---------------------------------------------------------------------------
 def chat(system: str, user: str, temperature: float = 0.2) -> str:
-    """Single-turn chat. Raises LLMUnavailable if the backend can't answer."""
+    """Single-turn chat. Raises LLMUnavailable if the backend can't answer.
+
+    "geniex" (the default) falls back to the universal "onnx" CPU backend if
+    the NPU bundle isn't fetched or GenieX can't load on this machine (e.g. a
+    non-Snapdragon dev box) — this is the one cross-backend fallback in this
+    dispatcher, so JB_LLM_BACKEND=geniex is safe to leave as the default even
+    on hardware that can't actually use the NPU path."""
     backend = config.LLM_BACKEND
     if backend == "geniex":
-        return _geniex_chat(system, user, temperature)
+        try:
+            return _geniex_chat(system, user, temperature)
+        except LLMUnavailable:
+            return _onnx_chat(system, user, temperature)
+    if backend == "onnx":
+        return _onnx_chat(system, user, temperature)
     if backend == "onnx_qnn":
         return _onnx_qnn_chat(system, user, temperature)
     if backend == "openai":
@@ -233,6 +331,19 @@ def chat_json(system: str, user: str, temperature: float = 0.1):
     if obj is None:
         raise LLMUnavailable(f"model did not return parseable JSON: {raw[:200]}")
     return obj
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough token count for diagnostics (e.g. checking whether a prompt is
+    close to a compiled NPU bundle's fixed context window). Uses the live
+    GenieX tokenizer if one is already loaded; otherwise falls back to a
+    chars/4 heuristic (a common rough approximation for English text)."""
+    if config.LLM_BACKEND == "geniex" and _geniex_model is not None:
+        try:
+            return len(_geniex_model.tokenizer.encode(text))
+        except Exception:
+            pass
+    return max(1, len(text) // 4)
 
 
 def is_live() -> bool:

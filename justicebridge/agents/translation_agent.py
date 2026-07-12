@@ -2,134 +2,112 @@
 Translation agent — renders the assembled English answer into the citizen's
 language (Tamil/Hindi/Telugu) for TTS on the phone.
 
-Two interchangeable backends (config.TRANSLATION_BACKEND), same
-graceful-degradation contract as every other backend in this codebase:
-  - "sarvam"      : Sarvam text.translate (cloud; verified live —
-                     model=sarvam-translate:v1, response.translated_text).
-                     Same network/SARVAM_API_KEY dependency as ASR/OCR/TTS.
-  - "indictrans2" : ai4bharat/indictrans2-en-indic-dist-200M — a real
-                     ON-DEVICE machine-translation model (~200M params, not
-                     an LLM). Lazy-loaded via transformers; once its weights
-                     are cached, translation runs fully offline/locally. This
-                     is the model to point at for a genuinely offline
-                     deployment (matches the arch doc's on-device requirement).
-  - "none"        : skip translation entirely.
+config.TRANSLATION_BACKEND:
+  - "nllb"  : facebook/nllb-200-distilled-600M — a real ON-DEVICE machine
+              -translation model (not an LLM), covering 200 languages
+              including Hindi/Tamil/Telugu, via transformers. Lazy-loaded;
+              once weights are cached, translation runs fully offline/
+              locally. Default backend.
 
-Fallback chain: sarvam -> indictrans2 -> English passthrough. Any failure at
-any step degrades to the next, never crashes — English-only output is always
-a safe, complete answer, just not localized.
+              NOTE: ai4bharat/indictrans2-en-indic-dist-200M (India-specific,
+              in principle higher quality for Indian languages) was tried
+              first but is a GATED HuggingFace repo — it 401s on download
+              without a manually-approved HF access request, which defeats
+              "clone and run offline" for anyone who hasn't gone through
+              that approval. NLLB is public/ungated and needs no HF account,
+              so it's the one that actually works out of the box. Swap back
+              to indictrans2 (config.INDICTRANS2_MODEL) once you have access
+              approved on your HF account, if you want the quality bump.
+  - "none"  : skip translation entirely, English passthrough.
+
+Any failure degrades to English passthrough, never crashes.
 
 Why this is a SEPARATE agent from TTS (agents/tts_agent.py), not merged:
 Translation is text -> text (machine translation, a very different model
 class — MT encoder-decoder, not a chat LLM); TTS is text -> audio (speech
-synthesis). They use different models, different providers even independently
-of each other (e.g. you could translate with IndicTrans2 but still speak with
-Sarvam Bulbul), and they compose in a pipeline (translate, THEN speak the
-translated text) rather than being two views of the same operation. Keeping
-them separate agents also means each can independently degrade (e.g.
-translation fails -> English text still gets spoken by TTS) instead of one
-failure silently killing both.
+synthesis). They compose in a pipeline (translate, THEN speak the translated
+text) rather than being two views of the same operation. Keeping them
+separate agents also means each can independently degrade (e.g. translation
+fails -> English text still gets spoken by TTS) instead of one failure
+silently killing both.
 """
 
 from ..state import CaseState
 from .. import config
 
-_indictrans2 = None
-_INDIC_CODES = {"ta": "tam_Taml", "hi": "hin_Deva", "te": "tel_Telu"}       # IndicTrans2 codes
-_SARVAM_CODES = {"ta": "ta-IN", "hi": "hi-IN", "te": "te-IN", "en": "en-IN"}  # Sarvam BCP-47 codes
+_nllb_model = None
+_INDIC_CODES = {
+    "english": "eng_Latn",
+    "en": "eng_Latn",
+    "hindi": "hin_Deva",
+    "hi": "hin_Deva",
+    "tamil": "tam_Taml",
+    "ta": "tam_Taml",
+    "telugu": "tel_Telu",
+    "te": "tel_Telu",
+    "kannada": "kan_Knda",
+    "malayalam": "mal_Mlym",
+    "marathi": "mar_Deva",
+    "gujarati": "guj_Gujr",
+    "bengali": "ben_Beng",
+    "odia": "ory_Orya",
+    "punjabi": "pan_Guru",
+    "assamese": "asm_Beng",
+}
 
 
-def _get_indictrans2():
-    global _indictrans2
-    if _indictrans2 is None:
-        from IndicTransToolkit import IndicProcessor  # type: ignore
-        from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-        name = config.INDICTRANS2_MODEL
-        tok = AutoTokenizer.from_pretrained(name, trust_remote_code=True)
-        model = AutoModelForSeq2SeqLM.from_pretrained(name, trust_remote_code=True)
-        _indictrans2 = (tok, model, IndicProcessor(inference=True))
-    return _indictrans2
+def _get_nllb():
+    global _nllb_model
+    if _nllb_model is None:
+        from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+
+        name = config.NLLB_MODEL  # e.g. "facebook/nllb-200-distilled-600M"
+        tok = AutoTokenizer.from_pretrained(name)
+        model = AutoModelForSeq2SeqLM.from_pretrained(name)
+        model.eval()
+        _nllb_model = (tok, model)
+    return _nllb_model
 
 
-def _translate_indictrans2(text, lang):
-    tgt = _INDIC_CODES.get(lang)
-    if not tgt:
+def _translate_nllb(text, lang):
+    tgt = _INDIC_CODES.get(lang.lower())
+    if tgt is None or tgt == "eng_Latn":
         return None
-    tok, model, ip = _get_indictrans2()
-    batch = ip.preprocess_batch([text], src_lang="eng_Latn", tgt_lang=tgt)
-    enc = tok(batch, return_tensors="pt", padding=True, truncation=True)
-    out = model.generate(**enc, max_length=512, num_beams=5)
-    dec = tok.batch_decode(out, skip_special_tokens=True)
-    return ip.postprocess_batch(dec, lang=tgt)[0]
 
+    tok, model = _get_nllb()
+    tok.src_lang = "eng_Latn"
 
-SARVAM_TRANSLATE_MAX_CHARS = 2000  # verified live: "String should have at most 2000 characters"
-
-
-def _chunk_text(text, max_len):
-    """Split on sentence boundaries into chunks under max_len chars — the
-    JusticeBridge answer (rights + aid pitch + deadline + DLSA + disclaimer)
-    routinely runs 2000-2500 chars, over Sarvam's per-call limit, so a single
-    long answer must be translated in pieces and rejoined."""
-    sentences = text.replace("\n", " ").split(". ")
-    chunks, current = [], ""
-    for i, s in enumerate(sentences):
-        piece = s if i == len(sentences) - 1 else s + ". "
-        if current and len(current) + len(piece) > max_len:
-            chunks.append(current)
-            current = piece
-        else:
-            current += piece
-    if current:
-        chunks.append(current)
-    return chunks
-
-
-def _translate_sarvam(text, lang):
-    tgt = _SARVAM_CODES.get(lang)
-    if not tgt or not config.SARVAM_API_KEY:
+    sentences = [s.strip() for s in text.replace("\n", " ").split(". ") if s.strip()]
+    if not sentences:
         return None
-    from sarvamai import SarvamAI
-    client = SarvamAI(api_subscription_key=config.SARVAM_API_KEY)
+    inputs = tok(sentences, truncation=True, padding="longest", return_tensors="pt")
 
-    chunks = _chunk_text(text, SARVAM_TRANSLATE_MAX_CHARS)
-    translated_parts = []
-    for chunk in chunks:
-        resp = client.text.translate(
-            input=chunk,
-            source_language_code="en-IN",
-            target_language_code=tgt,
-            model=config.SARVAM_TRANSLATE_MODEL,
+    import torch
+    with torch.no_grad():
+        generated = model.generate(
+            **inputs,
+            forced_bos_token_id=tok.convert_tokens_to_ids(tgt),
+            use_cache=True, min_length=0, max_length=256,
+            num_beams=config.NLLB_NUM_BEAMS,
         )
-        translated_parts.append(resp.translated_text)
-    return " ".join(translated_parts)
+    translated = tok.batch_decode(generated, skip_special_tokens=True, clean_up_tokenization_spaces=True)
+    return ". ".join(translated)
 
 
 def _translate(text, lang):
-    """Try the configured backend, then the other on-device/cloud option,
-    then give up (caller passes through English). Returns None if nothing
-    worked, never raises."""
-    order = []
-    if config.TRANSLATION_BACKEND == "sarvam":
-        order = [_translate_sarvam, _translate_indictrans2]
-    elif config.TRANSLATION_BACKEND == "indictrans2":
-        order = [_translate_indictrans2, _translate_sarvam]
-    else:
+    """Try the configured on-device backend. Returns None if unavailable or
+    it fails — caller passes through English. Never raises."""
+    if config.TRANSLATION_BACKEND != "nllb":
         return None  # "none" or unrecognised
-
-    for fn in order:
-        try:
-            result = fn(text, lang)
-            if result:
-                return result
-        except Exception:
-            continue
-    return None
+    try:
+        return _translate_nllb(text, lang)
+    except Exception:
+        return None
 
 
 def translation_agent(state: CaseState) -> dict:
-    answer_en = state.get("final_answer_en", "") or ""
-    lang = state.get("lang", "en") or "en"
+    answer_en = state.get("final_answer_en", "")
+    lang = state.get("lang", "en")
 
     if lang in ("en", "unknown") or not answer_en or config.TRANSLATION_BACKEND == "none":
         local = answer_en
@@ -139,7 +117,7 @@ def translation_agent(state: CaseState) -> dict:
         local = translated or answer_en
         out = {"final_answer_local": local}
         if translated is None:
-            out["error"] = [f"Translation unavailable for '{lang}' (both backends failed); using English"]
+            out["error"] = [f"Translation unavailable for '{lang}' (NLLB failed); using English"]
 
     phone_message = dict(state.get("phone_message") or {})
     phone_message["answer_local"] = local

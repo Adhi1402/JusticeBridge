@@ -92,6 +92,7 @@ def planner_agent(state: CaseState) -> dict:
     except llm.LLMUnavailable as e:
         chosen = None
         llm_unavailable = True
+        print(f"LLM is set to unavailable due to : {e}")
 
     if llm_unavailable and not config.ALLOW_PLANNER_FALLBACK:
         # Fallback disabled: don't silently switch to keyword routing when the

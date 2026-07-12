@@ -89,3 +89,6 @@ class CaseState(TypedDict, total=False):
     signal_packet: dict
     phone_message: dict
     audio_response: bytes            # TTS WAV bytes (spoken answer)
+
+    # ---- Observability (for the UI to show every agent's outcome) ----
+    agent_trace: Annotated[list[dict], operator.add]

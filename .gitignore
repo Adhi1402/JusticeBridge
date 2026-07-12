@@ -17,3 +17,10 @@ __pycache__/
 *.egg-info/
 .DS_Store
 *.log
+
+# regenerable build artifacts — rebuilt via build_index.py / auto-downloaded
+# by llm.py on first run. models/ contains a >2GB file, well over GitHub's
+# 100MB hard limit, so it can never be committed as-is.
+/justicebridge/chroma_db/
+/justicebridge/models/
+/justicebridge/logs/

@@ -64,6 +64,10 @@ def on_device_reasoning_tool(query: str, sections: list[dict]) -> dict:
         f"Respond as JSON: {{\"answer\": \"...\", \"claims\": "
         f"[{{\"claim\": \"...\", \"section_no\": \"<one of: {valid_ids}>\"}}]}}"
     )
+    prompt_tokens = llm.estimate_tokens(SYSTEM + user)
+    print(f"Reasoning prompt ~{prompt_tokens} tokens ({len(sections)} sections, "
+          f"max_new_tokens={config.GENIEX_MAX_NEW_TOKENS}) — check against the "
+          f"backend's context window if generation comes back empty")
     obj = llm.chat_json(SYSTEM, user)
     answer = (obj.get("answer") or "").strip()
     claims = []
@@ -78,6 +82,7 @@ def on_device_reasoning_tool(query: str, sections: list[dict]) -> dict:
 
 def _llm_draft(query, sections):
     result = on_device_reasoning_tool.invoke({"query": query, "sections": sections})
+    print("********",result)
     return result["answer"], result["claims"]
 
 

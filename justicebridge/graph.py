@@ -18,6 +18,9 @@ explicit flags the agents set (insufficient_context / needs_redraft), so the
 wiring stays simple and the loop bounds live inside the agents.
 """
 
+import time
+from typing import Any
+
 from langgraph.graph import StateGraph, START, END
 
 from .state import CaseState
@@ -31,6 +34,50 @@ from .agents.escalation_agent import escalation_agent
 from .agents.translation_agent import translation_agent
 from .agents.output_agent import output_agent
 from .agents.tts_agent import tts_node
+
+
+def _safe_trace_value(v: Any):
+    """Make a node's output values UI/JSON-friendly for agent_trace: no raw
+    bytes/PIL images, no runaway-long strings or lists."""
+    if isinstance(v, bytes):
+        return f"<{len(v)} bytes>"
+    if isinstance(v, (list, tuple)):
+        if v and hasattr(v[0], "save") and hasattr(v[0], "size"):  # PIL Images
+            return f"<{len(v)} image(s)>"
+        return [_safe_trace_value(x) for x in list(v)[:8]]
+    if isinstance(v, dict):
+        return {k: _safe_trace_value(x) for k, x in v.items()}
+    if isinstance(v, str):
+        return v if len(v) <= 300 else v[:300] + "…"
+    if hasattr(v, "save") and hasattr(v, "size"):  # single PIL Image
+        return "<image>"
+    return v
+
+
+def _instrumented(name: str, fn):
+    """Wrap a node so every agent's outcome (status, duration, output) is
+    recorded to state["agent_trace"] — lets the UI show what each of the 10
+    pipeline agents actually did, with zero changes to the agent files
+    themselves. `error` reducer is additive so this composes safely with the
+    two agents (asr/vision) that run in parallel from START."""
+
+    def wrapper(state: CaseState) -> dict:
+        start = time.perf_counter()
+        try:
+            update = fn(state) or {}
+            status = "error" if update.get("error") else "ok"
+        except Exception as e:
+            update = {"error": [f"{name} failed: {e}"]}
+            status = "error"
+        entry = {
+            "agent": name,
+            "duration_ms": round((time.perf_counter() - start) * 1000, 1),
+            "status": status,
+            "output": {k: _safe_trace_value(v) for k, v in update.items()},
+        }
+        return {**update, "agent_trace": [entry]}
+
+    return wrapper
 
 
 def _after_planner(state: CaseState) -> str:
@@ -48,18 +95,18 @@ def _after_grounding(state: CaseState) -> str:
 def build_graph():
     g = StateGraph(CaseState)
 
-    g.add_node("asr", asr_agent)
-    g.add_node("vision", vision_agent)
-    g.add_node("combine", combine_node)
-    g.add_node("planner", planner_agent)
-    g.add_node("retrieval", retrieval_agent)
-    g.add_node("reasoning", reasoning_agent)
-    g.add_node("grounding", grounding_agent)
-    g.add_node("risk", risk_agent)
-    g.add_node("escalation", escalation_agent)
-    g.add_node("output", output_agent)
-    g.add_node("translation", translation_agent)
-    g.add_node("tts", tts_node)
+    g.add_node("asr", _instrumented("asr", asr_agent))
+    g.add_node("vision", _instrumented("vision", vision_agent))
+    g.add_node("combine", _instrumented("combine", combine_node))
+    g.add_node("planner", _instrumented("planner", planner_agent))
+    g.add_node("retrieval", _instrumented("retrieval", retrieval_agent))
+    g.add_node("reasoning", _instrumented("reasoning", reasoning_agent))
+    g.add_node("grounding", _instrumented("grounding", grounding_agent))
+    g.add_node("risk", _instrumented("risk", risk_agent))
+    g.add_node("escalation", _instrumented("escalation", escalation_agent))
+    g.add_node("output", _instrumented("output", output_agent))
+    g.add_node("translation", _instrumented("translation", translation_agent))
+    g.add_node("tts", _instrumented("tts", tts_node))
 
     g.add_edge(START, "asr")
     g.add_edge(START, "vision")

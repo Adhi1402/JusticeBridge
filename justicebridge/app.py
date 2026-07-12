@@ -9,9 +9,9 @@ Run:
     pip install streamlit
     streamlit run justicebridge/app.py
 
-Backends (ASR / OCR / TTS / LLM) are all selectable in the sidebar and each
-degrades gracefully — Sarvam (cloud, Indian languages) or on-device
-(Whisper / Tesseract / pyttsx3 / GenieX-extractive).
+Backends (ASR / OCR / TTS / LLM) are all fully offline/on-device — Whisper /
+Tesseract / pyttsx3 / IndicTrans2 / ONNX Runtime (Phi-3-mini) — no cloud API
+keys required.
 """
 
 import io
@@ -51,14 +51,14 @@ with st.sidebar:
 
     st.divider()
     st.caption("Speech-to-text")
-    asr = st.selectbox("ASR backend", ["sarvam", "whisper"],
-                       index=["sarvam", "whisper"].index(config.ASR_BACKEND))
+    asr = st.selectbox("ASR backend", ["whisper"],
+                       index=["whisper"].index(config.ASR_BACKEND))
     st.caption("Document OCR")
-    vision = st.selectbox("Vision backend", ["sarvam", "tesseract"],
-                          index=["sarvam", "tesseract"].index(config.VISION_BACKEND))
+    vision = st.selectbox("Vision backend", ["tesseract"],
+                          index=["tesseract"].index(config.VISION_BACKEND))
     st.caption("Speak the answer back")
-    tts = st.selectbox("TTS backend", ["sarvam", "pyttsx3", "none"],
-                       index=["sarvam", "pyttsx3", "none"].index(config.TTS_BACKEND))
+    tts = st.selectbox("TTS backend", ["pyttsx3", "none"],
+                       index=["pyttsx3", "none"].index(config.TTS_BACKEND))
 
     os.environ["JB_ASR_BACKEND"] = asr
     os.environ["JB_VISION_BACKEND"] = vision
@@ -66,10 +66,7 @@ with st.sidebar:
 
     st.divider()
     st.write(f"**LLM backend:** `{config.LLM_BACKEND}`")
-    key_set = bool(config.SARVAM_API_KEY)
-    st.caption(("✅ SARVAM_API_KEY detected" if key_set
-                else "⚠️ No SARVAM_API_KEY — Sarvam backends will fall back "
-                     "to on-device (Whisper/Tesseract/pyttsx3)."))
+    st.caption("🔒 Fully offline — no cloud API keys used anywhere.")
 
 # import the graph AFTER env vars are set so config reflects the selection
 from justicebridge.graph import get_app  # noqa: E402

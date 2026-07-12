@@ -3,62 +3,58 @@
 # ----------------------------------------------------------------------------
 #   pip install -r justicebridge/requirements.txt
 #
-# NOTE: `geniex` below (Snapdragon NPU backend) will FAIL TO BUILD on a
+# Fully offline stack: no cloud API keys required. `geniex` (Snapdragon NPU
+# backend, only used when JB_LLM_BACKEND=geniex) will FAIL TO BUILD on a
 # non-Snapdragon x64 dev machine (verified: "Unsupported platform ('win32',
-# 'amd64')") — its native SDK only ships prebuilt binaries for win32/arm64 and
-# linux/aarch64. On an x64 dev box, comment out the `geniex` line below, then
-# `pip install -r justicebridge/requirements.txt`; the pipeline runs fine on
-# JB_LLM_BACKEND=extractive without it.
+# 'amd64')") — comment it out on x64; the default JB_LLM_BACKEND=onnx doesn't
+# need it.
 # ============================================================================
 
 # ---- Core orchestration + retrieval ----
 langgraph                 # the agent state machine
 langchain-core            # @tool wrappers
-langchain-community       # Chroma + BM25 retrievers
+langchain-community       # FAISS + BM25 retrievers
 langchain-text-splitters  # corpus chunking
-chromadb                  # per-KB-store vector collections
+faiss-cpu                 # per-KB-store vector index (local, no server deps)
 sentence-transformers     # all-MiniLM-L6-v2 embeddings (offline after 1st run)
 rank_bm25                 # keyword retrieval
 requests                  # OpenAI-compatible LLM backend + doc download
+transformers              # on-device Whisper ASR + IndicTrans2 translation
+huggingface_hub           # one-time local download/cache of the ONNX LLM bundle
 
 # ---- Corpus building (from the real Act PDFs) ----
 pdfplumber                # PDF text extraction
 
-# ---- Speech + Vision (the "Part A" input tier) ----
-sarvamai                  # Sarvam Saaras v3 STT, Bulbul v3 TTS, Doc Intelligence OCR,
-                          # text.translate (sarvam-translate:v1)
-python-dotenv             # load SARVAM_API_KEY from .env
-faster-whisper            # on-device/offline ASR fallback
-pyttsx3                   # on-device/offline TTS fallback
-pytesseract               # offline OCR fallback (also needs the Tesseract-OCR
-                          # binary installed on the OS, separately)
+# ---- Speech + Vision (the "Part A" input tier) — fully offline ----
+python-dotenv             # load .env overrides
+soundfile                 # WAV I/O for the on-device Whisper ASR
+pyttsx3                   # on-device/offline TTS
+pytesseract               # offline OCR (also needs the Tesseract-OCR binary
+                          # installed on the OS, separately)
 pillow                    # image handling
 
 # ---- Frontend + multi-device ----
 streamlit                 # the demo UI (mic + camera + severity light)
-fastapi                   # UNO Q mock listener (optional)
-uvicorn                   # UNO Q mock listener (optional)
+fastapi                   # HTTP API for the React frontend
+uvicorn                   # ASGI server for api.py
 
-# ---- Translation (optional — falls back to English if absent) ----
-IndicTransToolkit
-transformers            # IndicTrans2 en->indic
+# (Translation uses ai4bharat/indictrans2-en-indic-dist-200M directly via
+#  transformers — no extra package needed. IndicTransToolkit is deliberately
+#  NOT used: it ships a Cython extension that needs a C compiler to build,
+#  which isn't guaranteed on every deployment target.)
 
 # ============================================================================
-# On-device LLM backend for the Reasoning + Planner agents (install ONE on the
-# target hardware; set JB_LLM_BACKEND). NONE is required for the pipeline to
-# run — it degrades to a grounded, extractive answer built from retrieved
-# statute text (JB_LLM_BACKEND=extractive), which is what runs on a non-
-# Snapdragon dev machine.
+# On-device LLM backend for the Reasoning + Planner agents.
+#
+onnxruntime-genai      # Default backend (JB_LLM_BACKEND=onnx): Phi-3-mini-4k
+                        # -instruct-onnx on CPU, fully offline. Also used for
+                        # JB_LLM_BACKEND=onnx_qnn (Snapdragon Hexagon NPU).
 #
 geniex                 # Qualcomm GenieX (QAIRT/Genie), NPU on the Snapdragon AI
                         # PC. Native SDK only builds on win32/arm64 or
                         # linux/aarch64 — comment out on x64 (see NOTE above).
                         # JB_LLM_BACKEND=geniex
-
-onnxruntime-genai      # ORT + QNN execution provider on the Hexagon NPU,
-                        # loading a Qualcomm AI Hub genai bundle.
-                        # JB_LLM_BACKEND=onnx_qnn  JB_ONNX_QNN_MODEL_DIR=...
-
+#
 # (no extra package needed for JB_LLM_BACKEND=openai — any OpenAI-compatible
 #  /v1 server, e.g. llama.cpp. Set JB_OPENAI_BASE_URL.)
 # ============================================================================
