@@ -1,0 +1,69 @@
+{
+  "_note": "Legal Services Authorities Act, 1987, Section 12 — who is entitled to FREE legal aid. This is the headline feature (arch doc §0.3, §Legal-domain). Under s.13, entitlement needs only a prima-facie case and a simple income affidavit is generally sufficient, so the friction to claim aid is low. The Escalation/Aid agent scans the citizen's own words for these cues; when one matches, it can say with confidence 'you likely qualify'. This is a lookup, not a generation — the biggest, safest, highest-impact output the box produces.",
+  "statute": "Legal Services Authorities Act, 1987, Section 12",
+  "categories": [
+    {
+      "id": "woman",
+      "label": "a woman",
+      "automatic": true,
+      "cues": ["woman", "women", "she", "her", "wife", "widow", "lady", "girl", "mother", "daughter", "maid", "domestic worker", "housemaid"],
+      "explanation": "All women are entitled to free legal aid regardless of income."
+    },
+    {
+      "id": "child",
+      "label": "a child (under 18)",
+      "automatic": true,
+      "cues": ["child", "minor", "under 18", "under eighteen", "my son", "my daughter", "student"],
+      "explanation": "Children under 18 are entitled to free legal aid."
+    },
+    {
+      "id": "sc_st",
+      "label": "a member of a Scheduled Caste / Scheduled Tribe",
+      "automatic": true,
+      "cues": ["scheduled caste", "scheduled tribe", "sc/st", "dalit", "adivasi", "tribal"],
+      "explanation": "Members of Scheduled Castes and Scheduled Tribes are entitled to free legal aid."
+    },
+    {
+      "id": "disability",
+      "label": "a person with a disability",
+      "automatic": true,
+      "cues": ["disabled", "disability", "handicap", "blind", "deaf", "wheelchair"],
+      "explanation": "Persons with disabilities are entitled to free legal aid."
+    },
+    {
+      "id": "industrial_workman",
+      "label": "an industrial workman / worker",
+      "automatic": true,
+      "cues": ["worker", "workman", "labour", "labor", "factory", "construction", "mill", "plant", "daily wage", "coolie", "mazdoor", "employee", "helper", "site"],
+      "explanation": "Industrial workmen — factory, construction and industrial workers — are entitled to free legal aid. This covers most unpaid-wage cases."
+    },
+    {
+      "id": "trafficking_beggar",
+      "label": "a victim of trafficking or forced/bonded labour",
+      "automatic": true,
+      "cues": ["trafficking", "forced labour", "forced labor", "bonded", "begar", "not allowed to leave", "no pay at all"],
+      "explanation": "Victims of trafficking or forced labour (begar) under Article 23 are entitled to free legal aid."
+    },
+    {
+      "id": "custody",
+      "label": "a person in custody",
+      "automatic": true,
+      "cues": ["in jail", "in custody", "arrested", "detained", "lock-up", "remand"],
+      "explanation": "Persons in custody (including protective, juvenile and psychiatric facilities) are entitled to free legal aid."
+    },
+    {
+      "id": "mass_disaster",
+      "label": "a victim of a mass disaster / atrocity",
+      "automatic": true,
+      "cues": ["flood", "earthquake", "drought", "riot", "caste atrocity", "communal violence"],
+      "explanation": "Victims of mass disasters — floods, earthquakes, drought, caste atrocities, ethnic or communal violence — are entitled to free legal aid."
+    },
+    {
+      "id": "low_income",
+      "label": "a person below the state income ceiling",
+      "automatic": false,
+      "cues": ["poor", "no money", "cannot afford", "below poverty", "bpl", "ration card", "low income"],
+      "explanation": "Anyone below the state-set income ceiling qualifies (commonly Rs 1-3 lakh/year for lower courts; the exact figure is state-specific and must be verified). A simple income affidavit is generally enough."
+    }
+  ]
+}

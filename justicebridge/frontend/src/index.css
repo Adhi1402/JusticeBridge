@@ -1,0 +1,13 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  /* Mobile-first: content is always a single vertical column, capped in
+     width on wider screens so it still reads like a phone app on desktop. */
+  @apply bg-slate-50 text-slate-900 antialiased;
+}

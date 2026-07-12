@@ -1,0 +1,45 @@
+{
+  "_note": "Limitation / action-window table that drives the red/amber/green signal (arch doc Section 4). Encoding deadlines as DATA is what turns the LED from decoration into the most valuable thing the box does. EVERY period here is a STARTING REFERENCE and must be verified against current law before the demo (see the caveat at the top of the architecture doc). 'limitation_days' = the hard legal deadline; 'recommended_action_days' = the advisory 'act within' window we surface on the OLED; 'signal' = base colour for this matter type.",
+  "matters": {
+    "wages": {
+      "matter": "Unpaid wages claim",
+      "limitation_days": 1095,
+      "limitation_basis": "Code on Wages, 2019, s.45 — an application for a claim relating to wages must generally be filed within three years from the date on which the amount became due. (VERIFY.)",
+      "recommended_action_days": 90,
+      "signal": "amber",
+      "explanation": "Wages already earned are legally due. You have up to about three years to file a claim, but acting soon matters: evidence (attendance, messages, witnesses) fades and the money is already owed to you."
+    },
+    "legal_notice_reply": {
+      "matter": "Reply to a legal notice",
+      "limitation_days": 30,
+      "limitation_basis": "As stated in the notice itself — often 15 to 30 days. (VERIFY against the specific notice.)",
+      "recommended_action_days": 15,
+      "signal": "red",
+      "explanation": "A legal notice sets its own reply deadline. Missing it can be treated as ignoring the matter."
+    },
+    "consumer": {
+      "matter": "Consumer complaint",
+      "limitation_days": 730,
+      "limitation_basis": "Consumer Protection Act, 2019 — generally 2 years from the cause of action. (VERIFY.)",
+      "recommended_action_days": 180,
+      "signal": "amber",
+      "explanation": "Consumer complaints generally must be filed within two years of the problem arising."
+    },
+    "cheque_bounce": {
+      "matter": "Cheque bounce (Negotiable Instruments Act s.138)",
+      "limitation_days": 45,
+      "limitation_basis": "NI Act s.138 — 15-day statutory notice period + 30 days to file after that. (VERIFY.)",
+      "recommended_action_days": 15,
+      "signal": "red",
+      "explanation": "A cheque-bounce action runs on strict day-counts; missing them can end the case."
+    },
+    "general": {
+      "matter": "General rights awareness",
+      "limitation_days": null,
+      "limitation_basis": "No fixed deadline for simply knowing your rights.",
+      "recommended_action_days": null,
+      "signal": "green",
+      "explanation": "This is general awareness — no clock is running."
+    }
+  }
+}
